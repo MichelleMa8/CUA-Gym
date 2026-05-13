@@ -28,6 +28,10 @@ CUA-Gym is a scalable pipeline for synthesizing verifiable RLVR training data fo
 
 Training computer-use agents with reinforcement learning requires a consistent triple of **(task instruction, executable environment, verifiable reward)**. Hand-authoring even one such triple takes hours; CUA-Gym automates this at scale.
 
+<p align="center">
+  <img src="figures/main_figure.png" alt="CUA-Gym pipeline" width="100%"/>
+</p>
+
 **Pipeline.** Three coordinated agents run per task:
 
 - **Generator** (`setup-gen`): constructs the initial and golden environment states (`initial_setup.py`, `golden_patch.py`)
@@ -40,14 +44,35 @@ Training computer-use agents with reinforcement learning requires a consistent t
 
 **Dataset.** The resulting [CUA-Gym dataset](https://huggingface.co/datasets/cua-gym/cua-gym) contains **32,112** verified RLVR training tuples.
 
+**Comparison with existing CUA RLVR datasets:**
+
+| Dataset | Platform | Data size | Env. size | Reward | Open |
+|---------|----------|----------:|----------:|--------|:----:|
+| GUI-Genesis | Mobile | 969 | 1 | Programmatic | No |
+| WebArena-Infinity | Web | 1,260 | 10 | Programmatic | Yes |
+| InfiniteWeb | Web | 600 | — | Programmatic | No★ |
+| UltraCUA | Desktop | 17,000 | 9 | Programmatic | No★ |
+| Gym-Anything | Desktop | 7,277 | 193 | VLM | Yes |
+| **CUA-Gym** | **Desktop + Web** | **32,122** | **110** | **Programmatic** | **Yes** |
+
+★ partial release.
+
 ## Results
 
-| Model | Base | OSWorld-Verified | WebArena |
-|-------|------|-----------------|---------|
-| CUA-Gym-A3B | Qwen3.5-35B-A3B | **62.1%** | — |
-| CUA-Gym-A17B | Qwen3.5-397B-A17B | **70.2%** | **56.0** |
+| Model | OSWorld-Verified | WebArena |
+|-------|:----------------:|:--------:|
+| *Claude Sonnet 4.6* | 72.9 | 65.6 |
+| *Claude Opus 4.7* | 78.0 | — |
+| *GPT-5.5* | 78.7 | — |
+| *EvoCUA-8B* | 46.1 | — |
+| *EvoCUA-32B* | 56.7 | — |
+| *Kimi-K2.6* | 73.1 | — |
+| Qwen3.5-35B-A3B (base) | 54.5 | 40.8 |
+| Qwen3.5-397B-A17B (base) | 62.2 | 54.0 |
+| **CUA-Gym-A3B** | **62.1** | **44.5** |
+| **CUA-Gym-A17B** | **70.2** | **56.0** |
 
-Both models set state-of-the-art among open-source CUAs at their respective scales.
+Both models set state-of-the-art among open-source CUAs at their respective scales. CUA-Gym-A3B matches the much larger A17B base at ~10× fewer active parameters.
 
 ## Getting Started
 
