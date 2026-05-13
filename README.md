@@ -126,10 +126,23 @@ huggingface-cli download cua-gym/cua-gym --repo-type dataset --local-dir data/
 
 **Mock Web Apps (94):** Notion · Airtable · Monday · Asana · Jira · Trello · Slack · Discord · Teams · Gmail · Outlook · Salesforce · HubSpot · Shopify · Stripe · QuickBooks · AWS Console · Azure · Postman · WandB · GitHub · GitLab · Epic Health · PACS · and more — grounded in O\*NET occupational taxonomies and the Anthropic Economic Index
 
+## CUA-Gym-Hub
+
+[CUA-Gym-Hub](https://github.com/BowenBryanWang/CUA-Gym-Hub) (included as `hub/`) is a suite of **94 self-contained mock web applications** used as RL training environments. Each mock implements a realistic UI backed by a unified HTTP API for state injection, inspection, reset, and diffing — making it fully programmatic and reproducible.
+
+```bash
+# Run a mock app locally
+cd hub/notion_mock && npm install && npm run dev
+# State API available at http://localhost:5173/api/state
+```
+
+Mock apps span 7 categories: Communication & Social · Productivity · Development & Cloud · E-commerce & Travel · Finance & Enterprise · Analytics & Marketing · and more. See [hub/README.md](hub/README.md) for the full list and API reference.
+
 ## Repository Structure
 
 ```
 CUA-Gym/
+├── hub/                 # CUA-Gym-Hub submodule — 94 mock web apps
 ├── .claude/
 │   ├── agents/          # orchestrator, setup-gen, reward-gen, task-gen prompts
 │   ├── commands/        # /create-skill slash command
