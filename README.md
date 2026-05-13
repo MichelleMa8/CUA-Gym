@@ -22,7 +22,7 @@ CUA-Gym is a scalable pipeline for synthesizing verifiable RLVR training data fo
 
 ## News
 
-- [2026/xx] 🔥 CUA-Gym code, dataset (32,112 tuples), and models released.
+- [2026-05-13] We released the full pipeline, dataset and models of CUA-Gym 🔥🔥🔥
 
 ## About
 
