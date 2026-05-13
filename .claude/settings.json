@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Read(*)",
+      "Glob(*)",
+      "Grep(*)"
+    ]
+  },
+  "agents": {
+    "task-gen": {
+      "description": "Computer-use task synthesis expert. Brainstorms and generates diverse, evaluable task datasets for CUA post-training from a user prompt. Uses web research + domain expertise to produce structured task sets with instructions, context/ground-truth, and difficulty distribution.",
+      "prompt": ".claude/agents/task-gen.md"
+    },
+    "orchestrator": {
+      "description": "Orchestrator agent. Prepares environment, spawns setup-gen and reward-gen agents in adversarial loop, monitors agreement conditions, and outputs final verified task environments. Does NOT generate scripts itself.",
+      "prompt": ".claude/agents/orchestrator.md"
+    },
+    "setup-gen": {
+      "description": "Setup generation agent (Generator). Creates initial files and golden files via Python scripts within the adversarial loop. Reads REVIEW.md feedback from reward-gen and iterates until agreement.",
+      "prompt": ".claude/agents/setup-gen.md"
+    },
+    "reward-gen": {
+      "description": "Reward verification agent (Discriminator). Generates reward scripts with progressive 0.0-1.0 scoring, tests against golden and initial files, and writes structured REVIEW.md verdicts.",
+      "prompt": ".claude/agents/reward-gen.md"
+    }
+  }
+}

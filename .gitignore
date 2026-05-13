@@ -1,0 +1,39 @@
+output/
+assets/media/gimp/
+assets/media/vlc/videos/
+assets/media/vlc/audio/
+assets/media/openshot/clips/
+assets/media/openshot/overlays/
+assets/media/openshot/audio/
+utils/.oss_config
+utils/upload_to_oss.sh
+utils/collect_configs.sh
+.vscode/
+.idea/
+.DS_Store
+
+# Secrets / credentials / runtime configs
+.env
+env_config.json
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Internal run artifacts (logs, intermediate results)
+filter/results/
+*.log
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

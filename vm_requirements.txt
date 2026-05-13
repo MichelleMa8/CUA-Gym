@@ -1,0 +1,69 @@
+# Core Document/File Handling (high-frequency)
+python-docx
+python-pptx
+openpyxl
+lxml
+Pillow
+odfpy
+ezodf
+xlwt
+
+# Data & Scientific
+numpy
+pandas
+matplotlib
+scikit-learn
+scipy
+
+# PDF Generation
+fpdf2
+reportlab
+
+# Web Frameworks
+Flask
+Flask-SQLAlchemy
+fastapi
+Django
+uvicorn
+
+# Database
+SQLAlchemy
+psycopg2
+asyncpg
+redis
+alembic
+
+# HTTP / Networking
+requests
+httpx
+
+# Auth / Config / Templating
+PyJWT
+PyYAML
+Jinja2
+python-dotenv
+
+# Validation
+pydantic
+pydantic-settings
+
+# Image Processing
+piexif
+
+# GUI / Multimedia
+pygame
+
+# Testing
+pytest
+
+# Utilities
+beautifulsoup4
+psutil
+chardet
+colorama
+
+# Heavy ML (optional, install separately if needed)
+# torch
+# torchvision
+# tensorflow
+# paddlepaddle

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "cua-gym"
+version = "1.0.0"
+description = "Scalable pipeline for synthesizing verifiable RLVR training data for computer-use agents"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    # LLM clients
+    "openai>=1.40.0",
+    "anthropic>=0.34.0",
+    # Async HTTP (used by filter pipeline)
+    "aiohttp>=3.9.0",
+    # Validation
+    "pydantic>=2.0.0",
+    # HTTP requests (env management)
+    "requests>=2.31.0",
+    # Office document manipulation (setup/reward generation)
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.21",
+    "python-docx>=1.1.0",
+    # Image / PDF processing
+    "Pillow>=10.0.0",
+    "PyMuPDF>=1.23.0",
+    # Browser automation (mock website interaction)
+    "playwright>=1.44.0",
+    # Web framework (mock web apps)
+    "Flask>=3.0.0",
+    "Django>=5.0",
+    # Data utilities
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4.0",
+    "pre-commit>=3.7.0",
+    "pytest>=8.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/cua-gym/cua-gym"
+Paper    = "https://arxiv.org/abs/XXXX.XXXXX"
+Dataset  = "https://huggingface.co/datasets/cua-gym/cua-gym"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]

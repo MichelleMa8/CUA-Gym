@@ -1,0 +1,116 @@
+# CUA-Gym Task Taxonomy for Paper Visualization
+# Used by label_tasks.py to classify all 34K tasks along 5 dimensions.
+
+# ============================================================
+# Dimension 1: platform
+# Deterministic — derived from app_type field
+# ============================================================
+platform:
+  desktop:
+    description: "Pure desktop application tasks (LibreOffice, GIMP, VLC, etc.)"
+    match_rule: "app_type contains only desktop apps"
+  web:
+    description: "Pure web/mock-website tasks"
+    match_rule: "app_type contains only mock apps"
+  cross:
+    description: "Tasks spanning both desktop and web apps"
+    match_rule: "app_type contains both desktop and mock apps"
+
+# Known desktop app_type values (substring match)
+desktop_apps:
+  - libreoffice_calc
+  - libreoffice_writer
+  - libreoffice_impress
+  - vscode
+  - vs_code
+  - vs-code
+  - gimp
+  - vlc
+  - os
+  - pdf
+  - chrome
+  - blender
+
+# Known web app_type values (substring match)
+web_apps_suffix: "_mock"
+
+# ============================================================
+# Dimension 2: domain (O*NET SOC-aligned)
+# Deterministic for single-app tasks; inferred for multi-app
+# ============================================================
+domain:
+  Office Productivity:
+    description: "Spreadsheets, documents, presentations, PDF editing"
+    apps: [libreoffice_calc, libreoffice_writer, libreoffice_impress, pdf]
+  Software Development:
+    description: "Code editors, version control, DevOps"
+    apps: [vscode, vs_code, vs-code, github_mock, gitlab_mock]
+  System Administration:
+    description: "OS config, file management, system services"
+    apps: [os]
+  Visual Media:
+    description: "Image/video editing, media playback"
+    apps: [gimp, vlc, blender]
+  Communication:
+    description: "Messaging, email, social"
+    apps: [slack_mock, discord_mock, microsoft_teams_mock, wechat_mock,
+           gmail_mock, outlook_web_mock, twitter_mock, linkedin_mock,
+           reddit_mock, instagram_mock, facebook_mock, pinterest_mock]
+  Project Management:
+    description: "Task tracking, wikis, collaboration"
+    apps: [jira_mock, asana_mock, trello_mock, notion_mock, monday_mock, airtable_mock]
+  Business & CRM:
+    description: "CRM, e-commerce, finance, HR, legal"
+    apps: [salesforce_mock, hubspot_mock, shopify_admin_mock,
+           stripe_dashboard_mock, docusign_mock, uber_eats_mock,
+           instacart_mock, ebay_mock, amazon_mock]
+  Cloud & Analytics:
+    description: "Cloud consoles, monitoring, data analytics"
+    apps: [aws_console_mock, google_drive_mock, google_docs_mock,
+           google_sheets_mock, google_calendar_mock, postman_mock]
+  Web Browsing:
+    description: "General browser tasks"
+    apps: [chrome]
+
+# For multi-app tasks, domain = primary app's domain, or "Cross-Domain"
+# if apps span 2+ domains.
+
+# ============================================================
+# Dimension 3: difficulty
+# Use existing label if present; otherwise LLM-inferred
+# ============================================================
+difficulty:
+  easy:
+    description: "Single-step or obvious click path, 1-3 actions"
+  medium:
+    description: "Requires 3-10 steps, some reasoning"
+  hard:
+    description: "Long-horizon, multi-step, cross-view state tracking"
+
+# ============================================================
+# Dimension 4: scenario
+# Always LLM-inferred from instruction text
+# ============================================================
+scenario:
+  commercial:
+    description: "Business operations, enterprise workflow, e-commerce, sales"
+    examples: ["prepare quarterly report", "update CRM pipeline", "process customer order"]
+  educational:
+    description: "Learning, teaching, coursework, tutorials"
+    examples: ["grade student submissions", "create lecture slides", "format thesis"]
+  scientific:
+    description: "Data analysis, research, technical computation"
+    examples: ["plot experimental data", "run statistical analysis", "process sensor readings"]
+  personal:
+    description: "Entertainment, lifestyle, daily tasks, hobbies"
+    examples: ["organize photos", "plan vacation itinerary", "edit recipe collection"]
+
+# ============================================================
+# Dimension 5: task_type
+# Deterministic from number of distinct apps in app_type
+# ============================================================
+task_type:
+  single_app:
+    description: "Task involves exactly one application"
+  cross_app:
+    description: "Task involves 2+ applications"
