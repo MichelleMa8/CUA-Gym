@@ -32,10 +32,6 @@ CUA-Gym is a scalable pipeline for synthesizing verifiable RLVR training data fo
 
 Training computer-use agents with reinforcement learning requires a consistent triple of **(task instruction, executable environment, verifiable reward)**. Hand-authoring even one such triple takes hours; CUA-Gym automates this at scale.
 
-<p align="center">
-  <img src="figures/main_figure.png" alt="CUA-Gym pipeline" width="100%"/>
-</p>
-
 **Pipeline.** Three coordinated agents run per task:
 
 - **Generator** (`setup-gen`): constructs the initial and golden environment states (`initial_setup.py`, `golden_patch.py`)
@@ -141,6 +137,10 @@ huggingface-cli download cua-gym/cua-gym --repo-type dataset --local-dir data/
 ## CUA-Gym-Hub
 
 [CUA-Gym-Hub](https://github.com/BowenBryanWang/CUA-Gym-Hub) (included as `hub/`) is a suite of **94 self-contained mock web applications** used as RL training environments. Each mock implements a realistic UI backed by a unified HTTP API for state injection, inspection, reset, and diffing — making it fully programmatic and reproducible.
+
+<p align="center">
+  <img src="figures/env_pipeline_t.png" alt="CUA-Gym-Hub environment pipeline" width="100%"/>
+</p>
 
 ```bash
 # Run a mock app locally
