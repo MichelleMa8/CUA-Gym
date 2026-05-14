@@ -130,15 +130,13 @@ python filter/majority_vote_filter.py \
 huggingface-cli download xlangai/CUA-Gym --repo-type dataset --local-dir data/
 ```
 
-## Supported Environments
-
-<p align="center">
-  <img src="figures/env_grid.png" alt="CUA-Gym supported environments" width="100%"/>
-</p>
-
 ## CUA-Gym-Hub
 
 [CUA-Gym-Hub](https://github.com/BowenBryanWang/CUA-Gym-Hub) is the environment layer of CUA-Gym: a suite of self-contained mock web applications designed for scalable RL training. Each environment looks and behaves like a realistic web product, while exposing a unified state API for deterministic reset, inspection, mutation, and reward verification.
+
+<p align="center">
+  <img src="figures/env_grid.png" alt="CUA-Gym supported environments" width="75%"/>
+</p>
 
 <p align="center">
   <img src="figures/env_pipeline_t.png" alt="CUA-Gym-Hub environment pipeline" width="100%"/>
