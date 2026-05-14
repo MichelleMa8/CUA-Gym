@@ -61,83 +61,6 @@ Training computer-use agents with reinforcement learning requires a consistent t
 
 ★ partial release.
 
-## Dataset
-
-CUA-Gym releases executable RLVR task bundles for computer-use agents. Each row in the Hugging Face [Dataset Viewer](https://huggingface.co/datasets/xlangai/CUA-Gym/viewer/tasks/train) is a task-level index entry: it contains the natural-language instruction, environment metadata, setup references, and reward-function reference needed to reconstruct the original task bundle.
-
-👉 [CUA-Gym Hugging Face Dataset](https://huggingface.co/datasets/xlangai/CUA-Gym)
-
-Install the standard Hugging Face dataset tooling:
-
-```bash
-pip install -U datasets huggingface_hub
-```
-
-Load the task index directly in Python:
-
-```python
-from datasets import load_dataset
-
-tasks = load_dataset("xlangai/CUA-Gym", split="train")
-example = tasks[0]
-
-print(example["instruction"])
-print(example["app_type"], example["platform"], example["setup_kind"])
-```
-
-Or download the full dataset repository locally:
-
-```bash
-huggingface-cli download xlangai/CUA-Gym \
-  --repo-type dataset \
-  --local-dir ./CUA-Gym-data
-```
-
-The dataset is organized around one viewer-friendly table plus executable artifacts:
-
-```
-data/
-  tasks.parquet
-artifacts/
-  cua_gym_tasks_v1.tar.zst
-```
-
-Each task bundle contains:
-
-```
-<task_id>/
-  task.json
-  reward.py
-  initial_setup.py | initial_setup.sh | initial_setup.xlsx | initial_setup.docx | initial_setup.pptx
-```
-
-**Main fields in `tasks.parquet`:**
-
-<div align="center">
-
-| Field | Description |
-|-------|-------------|
-| `id` | Stable task identifier. |
-| `instruction` | Natural-language instruction shown to the agent. |
-| `app_type` | Source application or mock environment, such as `libreoffice_calc`, `vscode`, or `notion_mock`. |
-| `app_family` | Coarser application family for filtering and analysis. |
-| `platform` | Primary execution platform, for example desktop or web. |
-| `difficulty` | Difficulty label when available. |
-| `setup_kind` | Setup artifact type, such as `py`, `sh`, `xlsx`, `docx`, or `pptx`. |
-| `num_setup_steps` | Number of setup actions in the original task config. |
-| `num_setup_files` | Number of setup files referenced by the task config. |
-| `has_ground_truth` | Whether the source task includes a ground-truth payload. |
-| `setup_files` | Setup filenames referenced by the task. |
-| `archive_path` | Path to the artifact archive inside the dataset repository. |
-| `archive_member` | Task directory inside the artifact archive. |
-| `task_json_member` | Path to the original `task.json` inside the archive. |
-| `reward_member` | Path to the executable `reward.py` inside the archive. |
-| `setup_file_members` | Paths to setup artifacts inside the archive. |
-
-</div>
-
-To execute a task, extract the artifact archive, read `<task_id>/task.json`, run the listed setup steps in the target environment, let the agent interact with the environment, and finally run `<task_id>/reward.py` to compute the programmatic score.
-
 ## Results
 
 <div align="center">
@@ -226,6 +149,83 @@ cd hub/notion_mock && npm install && npm run dev
 ```
 
 Mock apps span 7 categories: Communication & Social · Productivity · Development & Cloud · E-commerce & Travel · Finance & Enterprise · Analytics & Marketing · and more. See [hub/README.md](hub/README.md) for the full list and API reference.
+
+## CUA-Gym Datasets
+
+CUA-Gym releases executable RLVR task bundles for computer-use agents. Each row in the Hugging Face [Dataset Viewer](https://huggingface.co/datasets/xlangai/CUA-Gym/viewer/tasks/train) is a task-level index entry: it contains the natural-language instruction, environment metadata, setup references, and reward-function reference needed to reconstruct the original task bundle.
+
+👉 [CUA-Gym Hugging Face Dataset](https://huggingface.co/datasets/xlangai/CUA-Gym)
+
+Install the standard Hugging Face dataset tooling:
+
+```bash
+pip install -U datasets huggingface_hub
+```
+
+Load the task index directly in Python:
+
+```python
+from datasets import load_dataset
+
+tasks = load_dataset("xlangai/CUA-Gym", split="train")
+example = tasks[0]
+
+print(example["instruction"])
+print(example["app_type"], example["platform"], example["setup_kind"])
+```
+
+Or download the full dataset repository locally:
+
+```bash
+huggingface-cli download xlangai/CUA-Gym \
+  --repo-type dataset \
+  --local-dir ./CUA-Gym-data
+```
+
+The dataset is organized around one viewer-friendly table plus executable artifacts:
+
+```
+data/
+  tasks.parquet
+artifacts/
+  cua_gym_tasks_v1.tar.zst
+```
+
+Each task bundle contains:
+
+```
+<task_id>/
+  task.json
+  reward.py
+  initial_setup.py | initial_setup.sh | initial_setup.xlsx | initial_setup.docx | initial_setup.pptx
+```
+
+**Main fields in `tasks.parquet`:**
+
+<div align="center">
+
+| Field | Description |
+|-------|-------------|
+| `id` | Stable task identifier. |
+| `instruction` | Natural-language instruction shown to the agent. |
+| `app_type` | Source application or mock environment, such as `libreoffice_calc`, `vscode`, or `notion_mock`. |
+| `app_family` | Coarser application family for filtering and analysis. |
+| `platform` | Primary execution platform, for example desktop or web. |
+| `difficulty` | Difficulty label when available. |
+| `setup_kind` | Setup artifact type, such as `py`, `sh`, `xlsx`, `docx`, or `pptx`. |
+| `num_setup_steps` | Number of setup actions in the original task config. |
+| `num_setup_files` | Number of setup files referenced by the task config. |
+| `has_ground_truth` | Whether the source task includes a ground-truth payload. |
+| `setup_files` | Setup filenames referenced by the task. |
+| `archive_path` | Path to the artifact archive inside the dataset repository. |
+| `archive_member` | Task directory inside the artifact archive. |
+| `task_json_member` | Path to the original `task.json` inside the archive. |
+| `reward_member` | Path to the executable `reward.py` inside the archive. |
+| `setup_file_members` | Paths to setup artifacts inside the archive. |
+
+</div>
+
+To execute a task, extract the artifact archive, read `<task_id>/task.json`, run the listed setup steps in the target environment, let the agent interact with the environment, and finally run `<task_id>/reward.py` to compute the programmatic score.
 
 ## Repository Structure
 
