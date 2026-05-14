@@ -169,6 +169,8 @@ See [hub/README.md](hub/README.md) for the full environment list, API contract, 
 
 CUA-Gym releases executable RLVR task bundles for computer-use agents. Each row in the Hugging Face [Dataset Viewer](https://huggingface.co/datasets/xlangai/CUA-Gym/viewer/tasks/train) is a task-level index entry: it contains the natural-language instruction, environment metadata, setup references, and reward-function reference needed to reconstruct the original task bundle.
 
+> **Important Notice.** Some web task setup and reward files require CUA-Gym-Hub endpoints. The public dataset stores these endpoints as placeholders such as `__CUA_GYM_GMAIL_URL__`, not as hard-coded hosted URLs. For reliable use, deploy the corresponding CUA-Gym-Hub apps yourself, set the `CUA_GYM_*_URL` variables in `url_variables.json`, and materialize the task files before running setup or reward code. The release-hosted `xlang.ai` endpoints are for reference and smoke tests, not for large-scale downstream experiments.
+
 👉 [CUA-Gym Hugging Face Dataset](https://huggingface.co/datasets/xlangai/CUA-Gym)
 
 Install the standard Hugging Face dataset tooling:
@@ -197,6 +199,23 @@ huggingface-cli download xlangai/CUA-Gym \
   --local-dir ./CUA-Gym-data
 ```
 
+If you plan to execute web tasks, extract the raw bundles and replace endpoint placeholders with your own deployment URLs:
+
+```bash
+mkdir -p ./cua_gym_tasks
+tar --zstd -xf ./CUA-Gym-data/artifacts/cua_gym_tasks_v1.tar.zst -C ./cua_gym_tasks
+
+cat > .env.cua-gym <<'EOF'
+CUA_GYM_GMAIL_URL=https://your-gmail-mock.example.com
+CUA_GYM_SLACK_URL=https://your-slack-mock.example.com
+CUA_GYM_NOTION_URL=https://your-notion-mock.example.com
+EOF
+
+python scripts/materialize_dataset_urls.py ./cua_gym_tasks \
+  --manifest ./CUA-Gym-data/url_variables.json \
+  --env-file .env.cua-gym
+```
+
 The dataset is organized around one viewer-friendly table plus executable artifacts:
 
 ```
@@ -204,6 +223,9 @@ data/
   tasks.parquet
 artifacts/
   cua_gym_tasks_v1.tar.zst
+url_variables.json
+scripts/
+  materialize_dataset_urls.py
 ```
 
 Each task bundle contains:
