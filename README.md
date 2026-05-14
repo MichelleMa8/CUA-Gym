@@ -1,28 +1,32 @@
+# CUA-Gym: Scaling Verifiable Training Environments and Tasks for Computer-Use Agents
+
+<p align="center">
+  <a href="https://arxiv.org/abs/XXXX.XXXXX">📄 Paper</a> |
+  <a href="https://huggingface.co/datasets/xlangai/CUA-Gym">🤗 Dataset</a> |
+  <a href="https://huggingface.co/datasets/xlangai/CUA-Gym/viewer/tasks/train">🔎 Data Viewer</a> |
+  <a href="https://huggingface.co/collections/xlangai/cua-gym">🤖 Models</a> |
+  <a href="https://github.com/BowenBryanWang/CUA-Gym-Hub">🧩 CUA-Gym-Hub</a>
+</p>
+
 <div align="center">
 
 [![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
-[![Dataset](https://img.shields.io/badge/🤗%20Dataset-CUA--Gym-yellow)](https://huggingface.co/datasets/cua-gym/cua-gym)
-[![Models](https://img.shields.io/badge/🤗%20Models-CUA--Gym-yellow)](https://huggingface.co/collections/cua-gym)
+[![Dataset](https://img.shields.io/badge/🤗%20Dataset-CUA--Gym-yellow)](https://huggingface.co/datasets/xlangai/CUA-Gym)
+[![Models](https://img.shields.io/badge/🤗%20Models-CUA--Gym-yellow)](https://huggingface.co/collections/xlangai/cua-gym)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 
 </div>
 
----
-
-<p align="center">
-<a href="https://arxiv.org/abs/XXXX.XXXXX"><b>Paper</b></a> |
-<a href="https://huggingface.co/datasets/cua-gym/cua-gym"><b>Dataset</b></a> |
-<a href="https://huggingface.co/collections/cua-gym"><b>Models</b></a>
-</p>
-
-# CUA-Gym
-
 CUA-Gym is a scalable pipeline for synthesizing verifiable RLVR training data for computer-use agents (CUAs). Given a topic, it jointly produces task instructions, environment states, and reward functions as verified triples — using coding agents to handle the engineering work previously requiring human experts.
 
-## News
+<p align="center">
+  <img src="figures/main_figure.png" alt="CUA-Gym pipeline" width="100%"/>
+</p>
 
-- [2026-05-13] We released the full pipeline, dataset and models of CUA-Gym 🔥🔥🔥
+## 📣 Updates
+
+- **2026-05-14:** We release the full pipeline, dataset and models of CUA-Gym 🔥🔥🔥
 
 ## About
 
@@ -46,6 +50,8 @@ Training computer-use agents with reinforcement learning requires a consistent t
 
 **Comparison with existing CUA RLVR datasets:**
 
+<div align="center">
+
 | Dataset | Platform | Data size | Env. size | Reward | Open |
 |---------|----------|----------:|----------:|--------|:----:|
 | GUI-Genesis | Mobile | 969 | 1 | Programmatic | No |
@@ -55,9 +61,13 @@ Training computer-use agents with reinforcement learning requires a consistent t
 | Gym-Anything | Desktop | 7,277 | 193 | VLM | Yes |
 | **CUA-Gym** | **Desktop + Web** | **32,122** | **110** | **Programmatic** | **Yes** |
 
+</div>
+
 ★ partial release.
 
 ## Results
+
+<div align="center">
 
 | Model | OSWorld-Verified | WebArena |
 |-------|:----------------:|:--------:|
@@ -71,6 +81,8 @@ Training computer-use agents with reinforcement learning requires a consistent t
 | Qwen3.5-397B-A17B (base) | 62.2 | 54.0 |
 | **CUA-Gym-A3B** | **62.1** | **44.5** |
 | **CUA-Gym-A17B** | **70.2** | **56.0** |
+
+</div>
 
 Both models set state-of-the-art among open-source CUAs at their respective scales. CUA-Gym-A3B matches the much larger A17B base at ~10× fewer active parameters.
 

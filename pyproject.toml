@@ -43,9 +43,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/cua-gym/cua-gym"
+Homepage = "https://github.com/BowenBryanWang/CUA-Gym"
 Paper    = "https://arxiv.org/abs/XXXX.XXXXX"
-Dataset  = "https://huggingface.co/datasets/cua-gym/cua-gym"
+Dataset  = "https://huggingface.co/datasets/xlangai/CUA-Gym"
 
 [tool.ruff]
 line-length = 100
