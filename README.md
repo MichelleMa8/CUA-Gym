@@ -138,19 +138,34 @@ huggingface-cli download xlangai/CUA-Gym --repo-type dataset --local-dir data/
 
 ## CUA-Gym-Hub
 
-[CUA-Gym-Hub](https://github.com/BowenBryanWang/CUA-Gym-Hub) (included as `hub/`) is a suite of **94 self-contained mock web applications** used as RL training environments. Each mock implements a realistic UI backed by a unified HTTP API for state injection, inspection, reset, and diffing — making it fully programmatic and reproducible.
+[CUA-Gym-Hub](https://github.com/BowenBryanWang/CUA-Gym-Hub) is the environment layer of CUA-Gym: a suite of self-contained mock web applications designed for scalable RL training. Each environment looks and behaves like a realistic web product, while exposing a unified state API for deterministic reset, inspection, mutation, and reward verification.
 
 <p align="center">
   <img src="figures/env_pipeline_t.png" alt="CUA-Gym-Hub environment pipeline" width="100%"/>
 </p>
 
+CUA-Gym-Hub is built by a multi-agent environment synthesis pipeline. Given a target application seed, the system drafts the product specification, implements the mock web app, exercises the UI with Playwright, and iterates until the live interface and API protocol match the specification.
+
+**What CUA-Gym-Hub provides:**
+
+- **Realistic mock applications:** browser environments spanning productivity, communication, development, commerce, finance, analytics, and media workflows.
+- **Unified state API:** every mock supports programmatic state injection, reset, retrieval, and diffing through a consistent HTTP interface.
+- **Verifiable rewards:** task-specific reward functions can inspect environment state directly instead of relying on screenshots or manual labels.
+- **Drop-in task generation:** generated apps plug into the CUA-Gym task synthesis pipeline as reproducible training environments.
+
+**Run a mock app locally**
+
 ```bash
-# Run a mock app locally
 cd hub/notion_mock && npm install && npm run dev
-# State API available at http://localhost:5173/api/state
 ```
 
-Mock apps span 7 categories: Communication & Social · Productivity · Development & Cloud · E-commerce & Travel · Finance & Enterprise · Analytics & Marketing · and more. See [hub/README.md](hub/README.md) for the full list and API reference.
+**Inspect environment state**
+
+```bash
+curl http://localhost:5173/api/state
+```
+
+See [hub/README.md](hub/README.md) for the full environment list, API contract, and app-specific setup instructions.
 
 ## CUA-Gym Datasets
 
