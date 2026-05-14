@@ -63,6 +63,8 @@ Training computer-use agents with reinforcement learning requires a consistent t
 
 ## Results
 
+CUA-Gym improves computer-use agents through verifiable RL training over both desktop and web environments. We evaluate trained models on [OSWorld-Verified](https://os-world.github.io/) and [WebArena](https://webarena.dev/), covering realistic multi-step software and browser tasks. CUA-Gym models deliver strong gains over their base models, with the A17B model setting a new open-source state-of-the-art on both benchmarks.
+
 <div align="center">
 
 | Model | OSWorld-Verified | WebArena |
