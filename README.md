@@ -130,9 +130,9 @@ huggingface-cli download xlangai/CUA-Gym --repo-type dataset --local-dir data/
 
 ## Supported Environments
 
-**Desktop (16):** LibreOffice Calc · Writer · Impress · GIMP · VLC · OpenShot · Blender · VS Code · Chrome · PDF · Penpot · Excalidraw · Overleaf CE · Grafana · Draw.io · Ubuntu OS
-
-**Mock Web Apps (94):** Notion · Airtable · Monday · Asana · Jira · Trello · Slack · Discord · Teams · Gmail · Outlook · Salesforce · HubSpot · Shopify · Stripe · QuickBooks · AWS Console · Azure · Postman · WandB · GitHub · GitLab · Epic Health · PACS · and more — grounded in O\*NET occupational taxonomies and the Anthropic Economic Index
+<p align="center">
+  <img src="figures/env_grid.png" alt="CUA-Gym supported environments" width="100%"/>
+</p>
 
 ## CUA-Gym-Hub
 
@@ -199,31 +199,6 @@ Each task bundle contains:
   reward.py
   initial_setup.py | initial_setup.sh | initial_setup.xlsx | initial_setup.docx | initial_setup.pptx
 ```
-
-**Main fields in `tasks.parquet`:**
-
-<div align="center">
-
-| Field | Description |
-|-------|-------------|
-| `id` | Stable task identifier. |
-| `instruction` | Natural-language instruction shown to the agent. |
-| `app_type` | Source application or mock environment, such as `libreoffice_calc`, `vscode`, or `notion_mock`. |
-| `app_family` | Coarser application family for filtering and analysis. |
-| `platform` | Primary execution platform, for example desktop or web. |
-| `difficulty` | Difficulty label when available. |
-| `setup_kind` | Setup artifact type, such as `py`, `sh`, `xlsx`, `docx`, or `pptx`. |
-| `num_setup_steps` | Number of setup actions in the original task config. |
-| `num_setup_files` | Number of setup files referenced by the task config. |
-| `has_ground_truth` | Whether the source task includes a ground-truth payload. |
-| `setup_files` | Setup filenames referenced by the task. |
-| `archive_path` | Path to the artifact archive inside the dataset repository. |
-| `archive_member` | Task directory inside the artifact archive. |
-| `task_json_member` | Path to the original `task.json` inside the archive. |
-| `reward_member` | Path to the executable `reward.py` inside the archive. |
-| `setup_file_members` | Paths to setup artifacts inside the archive. |
-
-</div>
 
 To execute a task, extract the artifact archive, read `<task_id>/task.json`, run the listed setup steps in the target environment, let the agent interact with the environment, and finally run `<task_id>/reward.py` to compute the programmatic score.
 
