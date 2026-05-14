@@ -227,33 +227,6 @@ Each task bundle contains:
 
 To execute a task, extract the artifact archive, read `<task_id>/task.json`, run the listed setup steps in the target environment, let the agent interact with the environment, and finally run `<task_id>/reward.py` to compute the programmatic score.
 
-## Repository Structure
-
-```
-CUA-Gym/
-├── hub/                 # CUA-Gym-Hub submodule — 94 mock web apps
-├── .claude/
-│   ├── agents/          # orchestrator, setup-gen, reward-gen, task-gen prompts
-│   ├── commands/        # /create-skill slash command
-│   └── skills/          # per-domain skill files (openpyxl, PIL, Flask APIs, etc.)
-├── filter/
-│   ├── majority_vote_filter.py   # LLM majority-vote filter
-│   ├── critic_prompt.py          # critic system + user prompt
-│   ├── run_critic_benchmark.py   # evaluate critic quality
-│   └── benchmark_tasks.json      # hand-labeled critic benchmark
-├── scripts/
-│   ├── batch_orchestrator.py     # batch task processing
-│   └── env_cli.py                # VM interaction CLI
-├── utils/
-│   ├── env.py           # VM provisioning (Aliyun ECS)
-│   ├── llm_utils.py     # LLM API wrappers with caching
-│   ├── reward_judge.py  # reward execution and scoring
-│   └── logger.py        # structured logging
-├── .env.example
-├── pyproject.toml
-└── LICENSE
-```
-
 ## Citation
 
 ```bibtex
