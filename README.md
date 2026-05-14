@@ -5,7 +5,7 @@
   <a href="https://huggingface.co/datasets/xlangai/CUA-Gym">🤗 Dataset</a> |
   <a href="https://huggingface.co/datasets/xlangai/CUA-Gym/viewer/tasks/train">🔎 Data Viewer</a> |
   <a href="https://huggingface.co/collections/xlangai/cua-gym">🤖 Models</a> |
-  <a href="https://github.com/BowenBryanWang/CUA-Gym-Hub">🧩 CUA-Gym-Hub</a>
+  <a href="https://github.com/xlang-ai/CUA-Gym-Hub">🧩 CUA-Gym-Hub</a>
 </p>
 
 <div align="center">
@@ -66,7 +66,7 @@ Training computer-use agents with reinforcement learning requires a consistent t
 **Install**
 
 ```bash
-git clone https://github.com/BowenBryanWang/CUA-Gym
+git clone https://github.com/xlang-ai/CUA-Gym
 cd CUA-Gym
 pip install -e ".[dev]"
 cp .env.example .env  # fill in OPENAI_API_KEY and ALIYUN_* credentials
@@ -109,7 +109,7 @@ huggingface-cli download xlangai/CUA-Gym --repo-type dataset --local-dir data/
 
 ## CUA-Gym-Hub
 
-[CUA-Gym-Hub](https://github.com/BowenBryanWang/CUA-Gym-Hub) is the environment layer of CUA-Gym: a suite of self-contained mock web applications designed for scalable RL training. Each environment looks and behaves like a realistic web product, while exposing a unified state API for deterministic reset, inspection, mutation, and reward verification.
+[CUA-Gym-Hub](https://github.com/xlang-ai/CUA-Gym-Hub) is the environment layer of CUA-Gym: a suite of self-contained mock web applications designed for scalable RL training. Each environment looks and behaves like a realistic web product, while exposing a unified state API for deterministic reset, inspection, mutation, and reward verification.
 
 <p align="center">
   <img src="figures/env_grid.png" alt="CUA-Gym supported environments" width="75%"/>
