@@ -61,29 +61,6 @@ Training computer-use agents with reinforcement learning requires a consistent t
 
 ★ partial release.
 
-## Results
-
-CUA-Gym improves computer-use agents through verifiable RL training over both desktop and web environments. We evaluate trained models on [OSWorld-Verified](https://os-world.github.io/) and [WebArena](https://webarena.dev/), covering realistic multi-step software and browser tasks. CUA-Gym models deliver strong gains over their base models, with the A17B model setting a new open-source state-of-the-art on both benchmarks.
-
-<div align="center">
-
-| Model | OSWorld-Verified | WebArena |
-|-------|:----------------:|:--------:|
-| *Claude Sonnet 4.6* | 72.9 | 65.6 |
-| *Claude Opus 4.7* | 78.0 | — |
-| *GPT-5.5* | 78.7 | — |
-| *EvoCUA-8B* | 46.1 | — |
-| *EvoCUA-32B* | 56.7 | — |
-| *Kimi-K2.6* | 73.1 | — |
-| Qwen3.5-35B-A3B (base) | 54.5 | 40.8 |
-| Qwen3.5-397B-A17B (base) | 62.2 | 54.0 |
-| **CUA-Gym-A3B** | **62.1** | **44.5** |
-| **CUA-Gym-A17B** | **70.2** | **56.0** |
-
-</div>
-
-Both models set state-of-the-art among open-source CUAs at their respective scales. CUA-Gym-A3B matches the much larger A17B base at ~10× fewer active parameters.
-
 ## Getting Started
 
 **Install**
@@ -238,6 +215,29 @@ Each task bundle contains:
 ```
 
 To execute a task, extract the artifact archive, read `<task_id>/task.json`, run the listed setup steps in the target environment, let the agent interact with the environment, and finally run `<task_id>/reward.py` to compute the programmatic score.
+
+## Results
+
+CUA-Gym improves computer-use agents through verifiable RL training over both desktop and web environments. We evaluate trained models on [OSWorld-Verified](https://os-world.github.io/) and [WebArena](https://webarena.dev/), covering realistic multi-step software and browser tasks. CUA-Gym models deliver strong gains over their base models, with the A17B model setting a new open-source state-of-the-art on both benchmarks.
+
+<div align="center">
+
+| Model | OSWorld-Verified | WebArena |
+|-------|:----------------:|:--------:|
+| *Claude Sonnet 4.6* | 72.9 | 65.6 |
+| *Claude Opus 4.7* | 78.0 | — |
+| *GPT-5.5* | 78.7 | — |
+| *EvoCUA-8B* | 46.1 | — |
+| *EvoCUA-32B* | 56.7 | — |
+| *Kimi-K2.6* | 73.1 | — |
+| Qwen3.5-35B-A3B (base) | 54.5 | 40.8 |
+| Qwen3.5-397B-A17B (base) | 62.2 | 54.0 |
+| **CUA-Gym-A3B** | **62.1** | **44.5** |
+| **CUA-Gym-A17B** | **70.2** | **56.0** |
+
+</div>
+
+Both models set state-of-the-art among open-source CUAs at their respective scales. CUA-Gym-A3B matches the much larger A17B base at ~10× fewer active parameters.
 
 ## Citation
 
