@@ -250,6 +250,25 @@ Both models set state-of-the-art among open-source CUAs at their respective scal
 }
 ```
 
-## License
+## Research and Commercial Use
 
-Code: [Apache 2.0](LICENSE) · Dataset: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+CUA-Gym may be used for **research, educational, and commercial purposes** under the following licenses:
+
+- **Code, tools, and pipeline:** [Apache License 2.0](LICENSE)
+- **Dataset:** [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/)
+
+## Citation and Acknowledgement
+
+If you use CUA-Gym, including its code, tools, CUA-Gym-Hub environments, dataset, models, or generated task artifacts, in any report, technical report, publication, thesis, presentation, blog post, documentation, or other publicly shared material, please include an explicit acknowledgement and cite the CUA-Gym paper.
+
+## Prohibited Uses
+
+- CUA-Gym may not be used for any purpose or activity that violates applicable laws or regulations in any jurisdiction.
+- Use for illegal, unethical, deceptive, privacy-invasive, or harmful activities is strictly prohibited.
+- Users may not use CUA-Gym to target real third-party services, accounts, credentials, or production systems without authorization.
+
+## Disclaimer
+
+- The authors, contributors, and copyright holders are not responsible for any illegal, unethical, or harmful use of CUA-Gym, nor for any direct or indirect damages resulting from such use.
+- The released tasks and mock environments are intended for controlled research and evaluation. Users are solely responsible for deploying, sandboxing, and operating them safely.
+- Use of the "CUA-Gym" name, logo, or trademarks does not imply endorsement or affiliation unless separate written permission is obtained.
