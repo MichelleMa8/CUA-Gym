@@ -165,7 +165,7 @@ Load the task index directly in Python:
 ```python
 from datasets import load_dataset
 
-tasks = load_dataset("xlangai/CUA-Gym", split="train")
+tasks = load_dataset("xlangai/CUA-Gym", "tasks", split="train")
 example = tasks[0]
 
 print(example["instruction"])
