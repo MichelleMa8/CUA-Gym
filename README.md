@@ -2,6 +2,7 @@
 
 <p align="center">
   <a href="https://arxiv.org/abs/XXXX.XXXXX">📄 Paper</a> |
+  <a href="https://bowenbryanwang.github.io/blog/introducing-cua-gym">📝 Blog</a> |
   <a href="https://huggingface.co/datasets/xlangai/CUA-Gym">🤗 Dataset</a> |
   <a href="https://huggingface.co/datasets/xlangai/CUA-Gym/viewer/tasks/train">🔎 Data Viewer</a> |
   🤖 Models (coming soon) |
