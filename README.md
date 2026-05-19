@@ -4,7 +4,7 @@
   <a href="https://arxiv.org/abs/XXXX.XXXXX">📄 Paper</a> |
   <a href="https://huggingface.co/datasets/xlangai/CUA-Gym">🤗 Dataset</a> |
   <a href="https://huggingface.co/datasets/xlangai/CUA-Gym/viewer/tasks/train">🔎 Data Viewer</a> |
-  <a href="https://huggingface.co/collections/xlangai/cua-gym">🤖 Models</a> |
+  🤖 Models (coming soon) |
   <a href="https://github.com/xlang-ai/CUA-Gym-Hub">🧩 CUA-Gym-Hub</a>
 </p>
 
@@ -12,7 +12,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
 [![Dataset](https://img.shields.io/badge/🤗%20Dataset-CUA--Gym-yellow)](https://huggingface.co/datasets/xlangai/CUA-Gym)
-[![Models](https://img.shields.io/badge/🤗%20Models-CUA--Gym-yellow)](https://huggingface.co/collections/xlangai/cua-gym)
+![Models](https://img.shields.io/badge/🤗%20Models-coming%20soon-lightgrey)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 
@@ -26,7 +26,8 @@ CUA-Gym is a scalable pipeline for synthesizing verifiable RLVR training data fo
 
 ## 📣 Updates
 
-- **2026-05-14:** We release the full pipeline, dataset and models of CUA-Gym 🔥🔥🔥
+- **2026-05-21:** We release the full [pipeline](https://github.com/xlang-ai/CUA-Gym) and [dataset](https://huggingface.co/datasets/xlangai/CUA-Gym) of CUA-Gym 🔥🔥🔥 (models coming soon)
+- We will gradually release the full dataset — the remaining data is currently undergoing administrative review.
 
 ## About
 
@@ -131,16 +132,19 @@ CUA-Gym-Hub is built by a multi-agent environment synthesis pipeline. Given a ta
 **Run a mock app locally**
 
 ```bash
-cd hub/notion_mock && npm install && npm run dev
+cd hub/websites/notion_mock
+npm install
+npm run dev          # http://localhost:5173
 ```
 
 **Inspect environment state**
 
 ```bash
-curl http://localhost:5173/api/state
+curl "http://localhost:5173/go?sid=task_001"
+# → {"initial_state": {...}, "current_state": {...}, "state_diff": {...}}
 ```
 
-See [hub/README.md](hub/README.md) for the full environment list, API contract, and app-specific setup instructions.
+Every mock supports the same session-scoped state API (`/go`, `/post`, `/state`, `/upload`, `/files/...`). For production-style deployment using `npm run preview` + a reverse proxy, see [hub/DEPLOY.md](hub/DEPLOY.md). For the full environment list, schema contract, and app-specific notes, see [hub/README.md](hub/README.md).
 
 ## CUA-Gym Datasets
 
