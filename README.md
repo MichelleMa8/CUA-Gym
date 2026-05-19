@@ -1,4 +1,6 @@
-# CUA-Gym: Scaling Verifiable Training Environments and Tasks for Computer-Use Agents
+# <img src="figures/logo.png" alt="CUA-Gym logo" width="72" align="left" hspace="14"/> CUA-Gym: Scaling Verifiable Training Environments and Tasks for Computer-Use Agents
+
+<br clear="left"/>
 
 <p align="center">
   <a href="https://arxiv.org/abs/XXXX.XXXXX">📄 Paper</a> |
