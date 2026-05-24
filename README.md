@@ -123,6 +123,8 @@ huggingface-cli download xlangai/CUA-Gym --repo-type dataset --local-dir data/
 
 CUA-Gym-Hub is built by a multi-agent environment synthesis pipeline. Given a target application seed, the system drafts the product specification, implements the mock web app, exercises the UI with Playwright, and iterates until the live interface and API protocol match the specification.
 
+Two design choices make each mock usable as an RL training environment: **(1) state injection** — a task ships its own JSON initial state alongside its `reward.py`, so a single mock can host arbitrarily many distinct task worlds with no code change; and **(2) session isolation** — every URL carries a session id, so parallel RL workers training on the same mock never see one another's mutations. See [hub/README.md](hub/README.md#why-this-works) for the full design rationale and HTTP state API.
+
 **What CUA-Gym-Hub provides:**
 
 - **Realistic mock applications:** browser environments spanning productivity, communication, development, commerce, finance, analytics, and media workflows.
