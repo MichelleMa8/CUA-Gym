@@ -240,7 +240,7 @@ CUA-Gym improves computer-use agents through verifiable RL training over both de
 | Qwen3.5-35B-A3B (base) | 54.5 | 40.8 |
 | Qwen3.5-397B-A17B (base) | 62.2 | 54.0 |
 | **CUA-Gym-A3B** | **62.1** | **44.5** |
-| **CUA-Gym-A17B** | **73.3** | **56.0** |
+| **CUA-Gym-A17B** | **72.6** | **56.0** |
 
 </div>
 
