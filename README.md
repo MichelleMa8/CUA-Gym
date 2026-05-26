@@ -1,7 +1,7 @@
 # CUA-Gym: Scaling Verifiable Training Environments and Tasks for Computer-Use Agents
 
 <p align="center">
-  <a href="https://arxiv.org/abs/XXXX.XXXXX">📄 Paper</a> |
+  <a href="https://arxiv.org/abs/2605.25624">📄 Paper</a> |
   <a href="https://bowenbryanwang.github.io/blog/introducing-cua-gym">📝 Blog</a> |
   <a href="https://huggingface.co/datasets/xlangai/CUA-Gym">🤗 Dataset</a> |
   <a href="https://huggingface.co/datasets/xlangai/CUA-Gym/viewer/tasks/train">🔎 Data Viewer</a> |
@@ -11,7 +11,7 @@
 
 <div align="center">
 
-[![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
+[![arXiv](https://img.shields.io/badge/arXiv-2605.25624-b31b1b.svg)](https://arxiv.org/abs/2605.25624)
 [![Dataset](https://img.shields.io/badge/🤗%20Dataset-CUA--Gym-yellow)](https://huggingface.co/datasets/xlangai/CUA-Gym)
 ![Models](https://img.shields.io/badge/🤗%20Models-coming%20soon-lightgrey)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
@@ -249,11 +249,14 @@ Both models set state-of-the-art among open-source CUAs at their respective scal
 ## Citation
 
 ```bibtex
-@article{cuagym2026,
-  title   = {CUA-Gym: Scaling Verifiable Training Environments and Tasks for Computer-Use Agents},
-  author  = {},
-  journal = {arXiv preprint arXiv:XXXX.XXXXX},
-  year    = {2026}
+@misc{wang2026cuagymscalingverifiabletraining,
+      title={CUA-Gym: Scaling Verifiable Training Environments and Tasks for Computer-Use Agents},
+      author={Bowen Wang and Dunjie Lu and Junli Wang and Tianyi Bai and Shixuan Liu and Zhipeng Zhang and Haiquan Wang and Hao Hu and Tianbao Xie and Shuai Bai and Dayiheng Liu and Que Shen and Junyang Lin and Tao Yu},
+      year={2026},
+      eprint={2605.25624},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2605.25624},
 }
 ```
 
