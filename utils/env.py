@@ -181,8 +181,12 @@ for itype in instance_types:
         print(f"INSTANCE_TYPE_USED={itype}", flush=True)
         break
     except Exception as e:
-        if "NoStock" in str(e):
+        err = str(e)
+        if "NoStock" in err:
             print(f"NoStock for {itype}, trying next...", flush=True)
+            continue
+        if "NvmeSupport" in err or "NotMatch" in err:
+            print(f"NvmeNotMatch for {itype}, trying next...", flush=True)
             continue
         raise
 else:
@@ -424,7 +428,7 @@ class LocalExecutor:
     """
 
     def __init__(self, osworld_dir: str, venv_path: str = None):
-        self.osworld_dir = osworld_dir
+        self.osworld_dir = os.path.expanduser(osworld_dir)
         self.venv_path = venv_path or "~/.venvs/osworld-py312"
 
     def run_python(self, script: str, timeout: int = 300,

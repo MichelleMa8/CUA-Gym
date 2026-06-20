@@ -1,0 +1,33 @@
+{
+  "tasks_dir": "/lcars/home/q/qianranm/research/GUI/CUA-Gym/data/cua_gym_all/cua_gym_tasks",
+  "seed": 999,
+  "apps": {
+    "gimp": {
+      "n": 30
+    },
+    "libreoffice_calc": {
+      "n": 50
+    },
+    "libreoffice_impress": {
+      "n": 50
+    },
+    "libreoffice_writer": {
+      "n": 50
+    },
+    "multi_apps": {
+      "n": 50
+    },
+    "os": {
+      "n": 2
+    },
+    "vlc": {
+      "n": 50
+    },
+    "vscode": {
+      "n": 50
+    },
+    "pdf": {
+      "n": 100
+    }
+  }
+}
