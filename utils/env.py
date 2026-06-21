@@ -488,6 +488,271 @@ class LocalExecutor:
 
 
 # ---------------------------------------------------------------------------
+# E2BEnv — e2b cloud sandbox environment (alternative to Aliyun / Docker)
+# ---------------------------------------------------------------------------
+
+
+class E2BEnv:
+    """
+    E2B cloud sandbox desktop environment for CUA-Gym.
+
+    Uses the e2b_desktop SDK to create a remote sandbox with a full XFCE
+    desktop, accessible over the internet.  Requires E2B_API_KEY to be set.
+
+    Enable by setting ENV_BACKEND=e2b in the environment.
+
+    Template defaults to 'desktop-all-apps'; override with E2B_ENV_TEMPLATE.
+    Timeout defaults to 3600 s; override with E2B_ENV_TIMEOUT.
+    """
+
+    E2B_TEMPLATE = os.getenv("E2B_ENV_TEMPLATE", "desktop-all-apps")
+    E2B_TIMEOUT = int(os.getenv("E2B_ENV_TIMEOUT", "3600"))
+
+    _SCREENSHOT_ATTEMPTS = 3
+    _SCREENSHOT_RETRY_DELAY = 1.0
+
+    class _Config:
+        def __init__(self, sandbox_id: str, template: str,
+                     task_id: Optional[str] = None) -> None:
+            self.instance_id = sandbox_id
+            self.vm_ip = "e2b"
+            self.provider_name = "e2b"
+            self.task_id = task_id
+            self.sandbox_id = sandbox_id
+            self.template = template
+
+    def __init__(self, sandbox, task_id: Optional[str] = None) -> None:
+        self._sandbox = sandbox
+        self.task_id = task_id
+        sandbox_id = str(getattr(sandbox, "sandbox_id", "") or "")
+        template = str(
+            getattr(sandbox, "template_id", self.E2B_TEMPLATE) or self.E2B_TEMPLATE
+        )
+        self.config = self._Config(sandbox_id, template, task_id)
+        self._killed = False
+
+    # --- SDK loader ---
+
+    @staticmethod
+    def _load_sdk():
+        """Import e2b_desktop.Sandbox; raise EnvError if not installed."""
+        try:
+            from e2b_desktop import Sandbox as E2BSandbox
+        except ModuleNotFoundError as exc:
+            raise EnvError(
+                "e2b_desktop is not installed. Run: pip install e2b-desktop"
+            ) from exc
+        return E2BSandbox
+
+    # --- Factory methods ---
+
+    @classmethod
+    def create(cls, task_id: Optional[str] = None) -> "E2BEnv":
+        """Create a new E2B desktop sandbox."""
+        Sandbox = cls._load_sdk()
+        sandbox = Sandbox.create(
+            template=cls.E2B_TEMPLATE,
+            timeout=cls.E2B_TIMEOUT,
+        )
+        sandbox_id = str(getattr(sandbox, "sandbox_id", "unknown") or "unknown")
+        logger.info(f"E2B sandbox created: {sandbox_id}")
+        return cls(sandbox=sandbox, task_id=task_id)
+
+    @classmethod
+    def from_config(cls, config_path: Union[str, Path]) -> "E2BEnv":
+        """Reconnect to an existing E2B sandbox from a saved config file."""
+        with open(config_path) as f:
+            config = json.load(f)
+        sandbox_id = config["sandbox_id"]
+        Sandbox = cls._load_sdk()
+        sandbox = Sandbox.connect(sandbox_id)
+        return cls(sandbox=sandbox, task_id=config.get("task_id"))
+
+    # --- Config persistence ---
+
+    def save_config(self, config_path: Union[str, Path]) -> None:
+        config = {
+            "sandbox_id": self.config.sandbox_id,
+            "template": self.config.template,
+            "task_id": self.task_id,
+            "provider_name": "e2b",
+            "vm_ip": "e2b",
+        }
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+    def get_stream_url(self) -> str:
+        """Start the desktop stream and return a live preview URL."""
+        try:
+            self._sandbox.stream.start()
+        except RuntimeError:
+            pass  # already started
+        return self._sandbox.stream.get_url(resize="scale")
+
+    # --- Core operations ---
+
+    def screenshot(self) -> Optional[bytes]:
+        """Take a screenshot and return raw PNG bytes."""
+        for attempt in range(1, self._SCREENSHOT_ATTEMPTS + 1):
+            path = f"/tmp/cua_gym_ss_{uuid.uuid4().hex}.png"
+            try:
+                self._sandbox.commands.run(
+                    f"scrot --pointer {shlex.quote(path)}", timeout=15
+                )
+                data = self._sandbox.files.read(path, format="bytes")
+                try:
+                    self._sandbox.commands.run(f"rm -f {shlex.quote(path)}", timeout=5)
+                except Exception:
+                    pass
+                return bytes(data)
+            except Exception as exc:
+                try:
+                    self._sandbox.commands.run(f"rm -f {shlex.quote(path)}", timeout=5)
+                except Exception:
+                    pass
+                if attempt < self._SCREENSHOT_ATTEMPTS:
+                    time.sleep(self._SCREENSHOT_RETRY_DELAY)
+                else:
+                    logger.error(
+                        f"E2B screenshot failed after {self._SCREENSHOT_ATTEMPTS} attempts: {exc}"
+                    )
+                    return None
+
+    def execute(self, command: str) -> dict:
+        """Execute a shell command in the sandbox."""
+        try:
+            result = self._sandbox.commands.run(command, timeout=90)
+            return {
+                "output": getattr(result, "stdout", "") or "",
+                "error": getattr(result, "stderr", "") or "",
+                "returncode": getattr(result, "exit_code", 0) or 0,
+            }
+        except Exception as e:
+            return {"output": "", "error": str(e), "returncode": 1}
+
+    def run_python(self, script: Union[str, Path]) -> dict:
+        """Run a Python script in the sandbox (base64-encoded)."""
+        if isinstance(script, Path):
+            script = script.read_text()
+        elif isinstance(script, str) and os.path.isfile(script):
+            with open(script) as f:
+                script = f.read()
+        encoded = base64.b64encode(script.encode()).decode()
+        cmd = f"python3 -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
+        return self.execute(cmd)
+
+    def run_bash(self, script: Union[str, Path], timeout: int = 30,
+                 working_dir: Optional[str] = None) -> dict:
+        """Run a bash script in the sandbox."""
+        if isinstance(script, Path):
+            script = script.read_text()
+        elif isinstance(script, str) and os.path.isfile(script):
+            with open(script) as f:
+                script = f.read()
+        script_path = f"/tmp/cua_gym_bash_{uuid.uuid4().hex}.sh"
+        self._sandbox.files.write(script_path, script)
+        cmd = f"bash {shlex.quote(script_path)}"
+        if working_dir:
+            cmd = f"cd {shlex.quote(working_dir)} && {cmd}"
+        try:
+            result = self._sandbox.commands.run(cmd, timeout=timeout)
+            out = {
+                "output": getattr(result, "stdout", "") or "",
+                "error": getattr(result, "stderr", "") or "",
+                "returncode": getattr(result, "exit_code", 0) or 0,
+            }
+        except Exception as e:
+            out = {"output": "", "error": str(e), "returncode": 1}
+        try:
+            self._sandbox.commands.run(f"rm -f {shlex.quote(script_path)}", timeout=5)
+        except Exception:
+            pass
+        return out
+
+    def upload(self, local_path: Union[str, Path], remote_path: str) -> None:
+        """Upload a local file into the sandbox."""
+        local_path = Path(local_path)
+        if not local_path.exists():
+            raise EnvError(f"Local file not found: {local_path}")
+        parent = str(Path(remote_path).parent)
+        self._sandbox.commands.run(f"mkdir -p {shlex.quote(parent)}", timeout=10)
+        self._sandbox.files.write(remote_path, local_path.read_bytes())
+
+    def download(self, remote_path: str) -> Optional[bytes]:
+        """Download a file from the sandbox as bytes."""
+        try:
+            data = self._sandbox.files.read(remote_path, format="bytes")
+            return bytes(data)
+        except Exception:
+            return None
+
+    def launch(self, command: str) -> None:
+        """Launch an application in the sandbox (non-blocking)."""
+        try:
+            self._sandbox.commands.run(command, background=True)
+        except Exception as exc:
+            logger.error(f"E2B launch failed: {exc}")
+
+    def get_screen_size(self) -> dict:
+        result = self.execute("xdpyinfo | grep dimensions")
+        m = re.search(r"(\d+)x(\d+)", result.get("output", ""))
+        if m:
+            return {"width": int(m.group(1)), "height": int(m.group(2))}
+        return {}
+
+    def get_accessibility_tree(self) -> Optional[str]:
+        result = self.execute("xdotool getactivewindow getwindowname 2>/dev/null || echo ''")
+        return result.get("output") if result.get("returncode") == 0 else None
+
+    def get_directory_tree(self, path: str) -> dict:
+        return self.execute(f"ls -la {shlex.quote(path)}")
+
+    # --- Lifecycle ---
+
+    def close(self) -> None:
+        """No-op: sandbox keeps running until kill() or delete_instance()."""
+        pass
+
+    def kill(self) -> None:
+        """Stop and remove the sandbox."""
+        if self._killed:
+            return
+        self._killed = True
+        try:
+            self._sandbox.kill()
+        except Exception as exc:
+            logger.warning(f"E2B sandbox kill failed: {exc}")
+        logger.info(f"E2B sandbox removed: {self.config.sandbox_id}")
+
+    @staticmethod
+    def delete_instance(config_path: Union[str, Path]) -> None:
+        """Kill the sandbox whose ID is stored in the config file."""
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            logger.warning(f"Could not load E2B config {config_path}: {exc}")
+            return
+        sandbox_id = config.get("sandbox_id")
+        if not sandbox_id:
+            logger.warning("No sandbox_id in E2B config — skipping cleanup")
+            return
+        try:
+            Sandbox = E2BEnv._load_sdk()
+            sandbox = Sandbox.connect(sandbox_id)
+            sandbox.kill()
+            logger.info(f"E2B sandbox removed: {sandbox_id}")
+        except Exception as exc:
+            logger.warning(f"E2B sandbox kill failed for {sandbox_id}: {exc}")
+
+    def __enter__(self) -> "E2BEnv":
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.close()
+
+
+# ---------------------------------------------------------------------------
 # DockerEnv — local Docker desktop environment (alternative to Aliyun)
 # ---------------------------------------------------------------------------
 
@@ -846,13 +1111,17 @@ class Env:
     @classmethod
     def create(cls, task_id: str = None, env_vars: dict = None,
                ssh_gateway: dict = None, local_executor: dict = None) -> "Env":
-        """Create a new VM (Aliyun) or Docker container (when ENV_BACKEND=docker).
+        """Create a new VM / sandbox based on ENV_BACKEND.
 
-        Set ENV_BACKEND=docker to use local Docker instead of Aliyun ECS.
-        Pass ssh_gateway dict to use legacy SSH gateway mode (e.g., running from Mac).
+        ENV_BACKEND=e2b    → E2BEnv (cloud sandbox, requires E2B_API_KEY)
+        ENV_BACKEND=docker → DockerEnv (local Docker container)
+        default            → Aliyun ECS via LocalExecutor (or SSHGateway if ssh_gateway passed)
         """
-        if os.getenv("ENV_BACKEND", "").strip().lower() == "docker":
+        _backend = os.getenv("ENV_BACKEND", "").strip().lower()
+        if _backend == "docker":
             return DockerEnv.create(task_id=task_id)
+        if _backend == "e2b":
+            return E2BEnv.create(task_id=task_id)
 
         if env_vars is None:
             env_vars = _collect_aliyun_env_vars()
@@ -904,6 +1173,8 @@ class Env:
             _raw = json.load(_f)
         if _raw.get("provider_name") == "docker":
             return DockerEnv.from_config(config_path)
+        if _raw.get("provider_name") == "e2b":
+            return E2BEnv.from_config(config_path)
 
         config = EnvConfig.load(config_path)
         gateway = None
@@ -1067,6 +1338,9 @@ class Env:
                 _raw = json.load(_f)
             if _raw.get("provider_name") == "docker":
                 DockerEnv.delete_instance(config_path)
+                return
+            if _raw.get("provider_name") == "e2b":
+                E2BEnv.delete_instance(config_path)
                 return
         except (FileNotFoundError, json.JSONDecodeError):
             pass

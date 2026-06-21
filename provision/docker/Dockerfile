@@ -169,8 +169,8 @@ RUN grep -q 'module-null-sink sink_name=virtual_speaker' /etc/pulse/default.pa |
       >> /etc/pulse/default.pa
 
 # ── Entrypoint scripts ────────────────────────────────────────────────────────
-COPY docker/entrypoint.sh  /usr/local/bin/gui-synth-entrypoint.sh
-COPY docker/healthcheck.sh /usr/local/bin/gui-synth-healthcheck.sh
+COPY provision/docker/entrypoint.sh  /usr/local/bin/gui-synth-entrypoint.sh
+COPY provision/docker/healthcheck.sh /usr/local/bin/gui-synth-healthcheck.sh
 RUN chmod +x \
     /usr/local/bin/gui-synth-entrypoint.sh \
     /usr/local/bin/gui-synth-healthcheck.sh
