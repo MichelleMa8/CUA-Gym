@@ -7,6 +7,8 @@ Pillow
 odfpy
 ezodf
 xlwt
+msoffcrypto-tool
+pyexcel-ods3
 
 # Data & Scientific
 numpy
@@ -14,10 +16,17 @@ pandas
 matplotlib
 scikit-learn
 scipy
+seaborn
 
-# PDF Generation
+# PDF Processing
 fpdf2
 reportlab
+PyMuPDF
+PyPDF2
+pypdf
+pikepdf
+pdfminer.six
+pyhanko
 
 # Web Frameworks
 Flask
@@ -42,6 +51,7 @@ PyJWT
 PyYAML
 Jinja2
 python-dotenv
+toml
 
 # Validation
 pydantic
@@ -49,9 +59,17 @@ pydantic-settings
 
 # Image Processing
 piexif
+gimpformats
+scikit-image
+opencv-python
 
-# GUI / Multimedia
+# GUI Automation (used in reward.py save hooks)
+pyautogui
+pyperclip
+
+# Audio / Multimedia
 pygame
+mutagen
 
 # Testing
 pytest
@@ -61,6 +79,7 @@ beautifulsoup4
 psutil
 chardet
 colorama
+imghdr        # Python 3.13 stdlib removal backport
 
 # Heavy ML (optional, install separately if needed)
 # torch

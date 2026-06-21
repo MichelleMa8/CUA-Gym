@@ -70,6 +70,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tar \
     tesseract-ocr \
     tesseract-ocr-eng \
+    xcftools \
     unzip \
     vlc \
     websockify \
@@ -107,6 +108,7 @@ RUN useradd -m -s /bin/bash user && \
 # runtime (pymupdf, pikepdf, fpdf2, etc.) to avoid per-task download delays.
 RUN pip3 install --no-cache-dir \
     fpdf2 \
+    gimpformats \
     lxml \
     marionette_driver \
     numpy \

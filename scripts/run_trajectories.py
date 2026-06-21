@@ -657,6 +657,15 @@ def score_env(env: Env, task_dir: Path) -> float:
     repo_root = Path(__file__).parent.parent
     env.upload(str(repo_root / "utils" / "reward_judge.py"), "/tmp/reward_judge.py")
 
+    # Ensure packages required by GIMP reward scripts are available.
+    # xcftools is a system package (apt); gimpformats is a Python package.
+    # These are no-ops if already installed (e.g. in Docker image).
+    reward_code_preview = (task_dir / "reward.py").read_text()
+    if "xcftools" in reward_code_preview or "xcf2png" in reward_code_preview:
+        env.execute("apt-get install -y -q xcftools 2>/dev/null || true")
+    if "gimpformats" in reward_code_preview:
+        env.execute("pip3 install -q gimpformats 2>/dev/null || true")
+
     # Run postconfig steps defined in task.json evaluator (e.g. ctrl+s to save)
     task_json = json.loads((task_dir / "task.json").read_text())
     postconfig = task_json.get("evaluator", {}).get("postconfig", [])
