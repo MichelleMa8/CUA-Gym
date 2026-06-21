@@ -8,7 +8,7 @@
 #SBATCH --exclusive
 #SBATCH --mem=200G
 #SBATCH --cpus-per-task=32
-#SBATCH --time=18:00:00
+#SBATCH --time=12:00:00
 
 mkdir -p /mnt/nlpgpu-io1/data/qianranm/research/GUI/CUA-Gym/slurm/logs
 

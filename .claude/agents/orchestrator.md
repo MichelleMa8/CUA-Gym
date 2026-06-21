@@ -173,7 +173,7 @@ print(f'Task config written for {config[\"task_id\"]}')"
 
 ### Step 2.5: Create TWO VM Environments
 
-Create two remote VMs per task:
+Create two isolated environments per task:
 1. `initial_env` for `initial_setup.py`
 2. `golden_env` for `golden_patch.py`
 
@@ -189,13 +189,25 @@ python3 scripts/env_cli.py create \
 
 Both creations must succeed before entering the adversarial loop.
 
-**Environment variables required** (loaded from `.env`):
+**Provider selection** (set in `.env` or shell before running):
+
+*Local Docker (recommended for local development — no cloud credentials needed):*
+```bash
+export ENV_BACKEND=docker
+# Optional overrides:
+# DOCKER_ENV_IMAGE=gui-synth-env-desktop:latest
+# DOCKER_ENV_PLATFORM=linux/amd64
+# DOCKER_ENV_SHM_SIZE=2g
+# DOCKER_ENV_READY_TIMEOUT=90
+```
+
+*Aliyun ECS (default — requires cloud credentials):*
 - `ALIYUN_ACCESS_KEY_ID`, `ALIYUN_ACCESS_KEY_SECRET`
 - `ALIYUN_REGION`, `ALIYUN_IMAGE_ID`, `ALIYUN_INSTANCE_TYPE`
 - `ALIYUN_VSWITCH_ID`, `ALIYUN_SECURITY_GROUP_ID`
 - Optional: `ALIYUN_RESOURCE_GROUP_ID`, `ALIYUN_USE_PRIVATE_IP`
 
-If VM creation fails, skip this task and report the error.
+If environment creation fails, skip this task and report the error.
 
 ### Step 3: Adversarial Loop
 
@@ -523,9 +535,9 @@ print('VMs deleted')
 "
 ```
 
-This SSHes to the gateway server and calls the Aliyun API to force-delete the ECS instance.
+For Docker: removes the container. For Aliyun: force-deletes the ECS instance.
 
-**IMPORTANT**: Always run this step, even if the task failed. Leaked VMs incur unnecessary cost.
+**IMPORTANT**: Always run this step, even if the task failed. Leaked environments incur cost or consume resources.
 
 ### Step 5: On Failure — Report
 

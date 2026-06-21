@@ -26,10 +26,13 @@ import base64
 import json
 import logging
 import os
+import re
+import shlex
 import socket
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -485,6 +488,335 @@ class LocalExecutor:
 
 
 # ---------------------------------------------------------------------------
+# DockerEnv — local Docker desktop environment (alternative to Aliyun)
+# ---------------------------------------------------------------------------
+
+_DOCKER_DBUS = "unix:path=/tmp/runtime-user/bus"
+
+
+class DockerEnv:
+    """
+    Local Docker-based desktop environment for CUA-Gym.
+
+    Replaces Aliyun ECS VMs with local Docker containers running a full
+    XFCE desktop (gui-synth-env-desktop image from OpenComputer).
+
+    Enable by setting ENV_BACKEND=docker in the environment.
+
+    Image defaults to gui-synth-env-desktop:latest; override with
+    DOCKER_ENV_IMAGE, DOCKER_ENV_PLATFORM, DOCKER_ENV_SHM_SIZE, etc.
+    """
+
+    DOCKER_IMAGE = os.getenv("DOCKER_ENV_IMAGE", "gui-synth-env-desktop:latest")
+    DOCKER_PLATFORM = os.getenv("DOCKER_ENV_PLATFORM", "linux/amd64")
+    DOCKER_SHM_SIZE = os.getenv("DOCKER_ENV_SHM_SIZE", "2g")
+    DOCKER_MEMORY: Optional[str] = os.getenv("DOCKER_ENV_MEMORY") or None
+    DOCKER_CPUS: Optional[str] = os.getenv("DOCKER_ENV_CPUS") or None
+    DOCKER_READY_TIMEOUT = int(os.getenv("DOCKER_ENV_READY_TIMEOUT", "90"))
+
+    class _Config:
+        """Minimal config object so callers can access env.config.instance_id / vm_ip."""
+        def __init__(self, container_id: str, task_id: Optional[str] = None):
+            self.instance_id = container_id
+            self.vm_ip = "localhost"
+            self.provider_name = "docker"
+            self.task_id = task_id
+
+    def __init__(self, container_id: str, task_id: Optional[str] = None):
+        self.container_id = container_id
+        self.task_id = task_id
+        self.config = self._Config(container_id, task_id)
+        self._killed = False
+
+    # --- Factory methods ---
+
+    @classmethod
+    def create(cls, task_id: Optional[str] = None) -> "DockerEnv":
+        """Start a Docker desktop container and wait for the XFCE desktop to be ready."""
+        container_name = f"cua-gym-{uuid.uuid4().hex[:12]}"
+        run_argv = [
+            "docker", "run", "-d", "--rm",
+            "--name", container_name,
+            "--platform", cls.DOCKER_PLATFORM,
+            "--shm-size", cls.DOCKER_SHM_SIZE,
+            "--security-opt", "seccomp=unconfined",
+            "--tmpfs", "/tmp:rw,exec,nosuid,size=2g",
+            "--tmpfs", "/home/user:rw,exec,nosuid,uid=1000,gid=1000,mode=700,size=4g",
+            "-e", "SCREEN_WIDTH=1920",
+            "-e", "SCREEN_HEIGHT=1080",
+            "-e", f"ENV_TIMEOUT_SECONDS=3600",
+        ]
+        if cls.DOCKER_MEMORY:
+            run_argv += ["--memory", cls.DOCKER_MEMORY]
+        if cls.DOCKER_CPUS:
+            run_argv += ["--cpus", cls.DOCKER_CPUS]
+        run_argv.append(cls.DOCKER_IMAGE)
+
+        try:
+            result = subprocess.run(run_argv, capture_output=True, text=True, timeout=180)
+        except FileNotFoundError:
+            raise EnvError(
+                "Docker CLI not found. Install Docker Engine and ensure 'docker' is on PATH."
+            )
+
+        if result.returncode != 0:
+            raise EnvError(f"Docker container start failed: {result.stderr.strip()}")
+
+        container_id = result.stdout.strip()
+        logger.info(f"Docker container started: {container_id[:12]} ({container_name})")
+
+        env = cls(container_id=container_id, task_id=task_id)
+        try:
+            env._wait_ready()
+        except Exception:
+            subprocess.run(["docker", "rm", "-f", container_id],
+                           capture_output=True, timeout=20)
+            raise
+        return env
+
+    @classmethod
+    def from_config(cls, config_path: Union[str, Path]) -> "DockerEnv":
+        """Reconnect to an existing Docker container from a saved config file."""
+        with open(config_path) as f:
+            config = json.load(f)
+        return cls(
+            container_id=config["container_id"],
+            task_id=config.get("task_id"),
+        )
+
+    # --- Config persistence ---
+
+    def save_config(self, config_path: Union[str, Path]) -> None:
+        config = {
+            "container_id": self.container_id,
+            "task_id": self.task_id,
+            "provider_name": "docker",
+            "vm_ip": "localhost",
+        }
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+    # --- Internal helpers ---
+
+    def _exec_text(self, command: str, timeout: int = 90,
+                   user: Optional[str] = None) -> subprocess.CompletedProcess:
+        """Run command in container; capture stdout/stderr as text."""
+        argv = ["docker", "exec"]
+        if user:
+            argv += ["--user", user]
+        argv += [
+            self.container_id, "bash", "-lc",
+            (
+                f"export DBUS_SESSION_BUS_ADDRESS=${{DBUS_SESSION_BUS_ADDRESS:-{_DOCKER_DBUS}}}; "
+                f"export DISPLAY=:0; {command}"
+            ),
+        ]
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+    def _exec_bytes(self, command: str, input_bytes: Optional[bytes] = None,
+                    timeout: int = 30, user: Optional[str] = None,
+                    detach: bool = False) -> subprocess.CompletedProcess:
+        """Run command in container; capture stdout/stderr as bytes."""
+        argv = ["docker", "exec"]
+        if detach:
+            argv.append("-d")
+        if input_bytes is not None:
+            argv.append("-i")
+        if user:
+            argv += ["--user", user]
+        argv += [
+            self.container_id, "bash", "-lc",
+            (
+                f"export DBUS_SESSION_BUS_ADDRESS=${{DBUS_SESSION_BUS_ADDRESS:-{_DOCKER_DBUS}}}; "
+                f"export DISPLAY=:0; {command}"
+            ),
+        ]
+        return subprocess.run(argv, input=input_bytes, capture_output=True, timeout=timeout)
+
+    def _write_remote_file(self, remote_path: str, data: bytes) -> None:
+        parent = str(Path(remote_path).parent)
+        subprocess.run(
+            ["docker", "exec", "--user", "root", self.container_id, "bash", "-lc",
+             f"mkdir -p {shlex.quote(parent)}"],
+            capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["docker", "exec", "-i", "--user", "root", self.container_id, "bash", "-lc",
+             f"cat > {shlex.quote(remote_path)}"],
+            input=data, capture_output=True, timeout=30,
+        )
+        subprocess.run(
+            ["docker", "exec", "--user", "root", self.container_id, "bash", "-lc",
+             f"chown user:user {shlex.quote(remote_path)} 2>/dev/null || true"],
+            capture_output=True, timeout=10,
+        )
+
+    # --- Core operations (mirrors Env interface) ---
+
+    def screenshot(self) -> Optional[bytes]:
+        """Take a screenshot and return raw PNG bytes."""
+        path = f"/tmp/cua_gym_ss_{uuid.uuid4().hex}.png"
+        result = self._exec_text(f"scrot --pointer {shlex.quote(path)}", timeout=20)
+        if result.returncode != 0:
+            logger.error(f"scrot failed: {result.stderr}")
+            return None
+        read_result = subprocess.run(
+            ["docker", "exec", self.container_id, "cat", path],
+            capture_output=True, timeout=30,
+        )
+        self._exec_text(f"rm -f {shlex.quote(path)}", timeout=10)
+        return read_result.stdout if read_result.returncode == 0 else None
+
+    def execute(self, command: str) -> dict:
+        """Execute a shell command in the container."""
+        result = self._exec_text(command, timeout=90)
+        return {
+            "output": result.stdout,
+            "error": result.stderr,
+            "returncode": result.returncode,
+        }
+
+    def run_python(self, script: Union[str, Path]) -> dict:
+        """Run a Python script in the container (base64-encoded)."""
+        if isinstance(script, Path):
+            script = script.read_text()
+        elif isinstance(script, str) and os.path.isfile(script):
+            with open(script) as f:
+                script = f.read()
+        encoded = base64.b64encode(script.encode()).decode()
+        cmd = f"python3 -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
+        return self.execute(cmd)
+
+    def run_bash(self, script: Union[str, Path], timeout: int = 30,
+                 working_dir: Optional[str] = None) -> dict:
+        """Run a bash script in the container."""
+        if isinstance(script, Path):
+            script = script.read_text()
+        elif isinstance(script, str) and os.path.isfile(script):
+            with open(script) as f:
+                script = f.read()
+        script_path = f"/tmp/cua_gym_bash_{uuid.uuid4().hex}.sh"
+        self._write_remote_file(script_path, script.encode())
+        cmd = f"bash {shlex.quote(script_path)}"
+        if working_dir:
+            cmd = f"cd {shlex.quote(working_dir)} && {cmd}"
+        result = self._exec_text(cmd, timeout=timeout)
+        self._exec_text(f"rm -f {shlex.quote(script_path)}", timeout=10)
+        return {
+            "output": result.stdout,
+            "error": result.stderr,
+            "returncode": result.returncode,
+        }
+
+    def upload(self, local_path: Union[str, Path], remote_path: str) -> None:
+        """Upload a local file into the container."""
+        local_path = Path(local_path)
+        if not local_path.exists():
+            raise EnvError(f"Local file not found: {local_path}")
+        self._write_remote_file(remote_path, local_path.read_bytes())
+
+    def download(self, remote_path: str) -> Optional[bytes]:
+        """Download a file from the container as bytes."""
+        result = subprocess.run(
+            ["docker", "exec", self.container_id, "cat", remote_path],
+            capture_output=True, timeout=30,
+        )
+        return result.stdout if result.returncode == 0 else None
+
+    def launch(self, command: str) -> None:
+        """Launch an application in the container (non-blocking)."""
+        self._exec_bytes(command, detach=True)
+
+    def get_screen_size(self) -> dict:
+        result = self._exec_text("xdpyinfo | grep dimensions", timeout=10)
+        m = re.search(r"(\d+)x(\d+)", result.stdout)
+        if m:
+            return {"width": int(m.group(1)), "height": int(m.group(2))}
+        return {}
+
+    def get_accessibility_tree(self) -> Optional[str]:
+        result = self._exec_text(
+            "xdotool getactivewindow getwindowname 2>/dev/null || echo ''",
+            timeout=10,
+        )
+        return result.stdout if result.returncode == 0 else None
+
+    def get_directory_tree(self, path: str) -> dict:
+        result = self._exec_text(f"ls -la {shlex.quote(path)}", timeout=10)
+        return {
+            "output": result.stdout,
+            "error": result.stderr,
+            "returncode": result.returncode,
+        }
+
+    # --- Lifecycle ---
+
+    def close(self) -> None:
+        """No-op: container keeps running until kill() or delete_instance()."""
+        pass
+
+    def kill(self) -> None:
+        """Stop and remove the container immediately."""
+        if self._killed:
+            return
+        self._killed = True
+        subprocess.run(["docker", "rm", "-f", self.container_id],
+                       capture_output=True, timeout=20)
+        logger.info(f"Docker container removed: {self.container_id[:12]}")
+
+    @staticmethod
+    def delete_instance(config_path: Union[str, Path]) -> None:
+        """Remove the container whose ID is stored in the config file."""
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            logger.warning(f"Could not load Docker config {config_path}: {exc}")
+            return
+        container_id = config.get("container_id")
+        if not container_id:
+            logger.warning("No container_id in Docker config — skipping cleanup")
+            return
+        subprocess.run(["docker", "rm", "-f", container_id],
+                       capture_output=True, timeout=20)
+        logger.info(f"Docker container removed: {container_id[:12]}")
+
+    def _wait_ready(self) -> None:
+        """Block until XFCE desktop services are up."""
+        deadline = time.time() + self.DOCKER_READY_TIMEOUT
+        last_error = "desktop not ready"
+        while time.time() < deadline:
+            ps = subprocess.run(
+                ["docker", "ps", "-q", "-f", f"id={self.container_id}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if not ps.stdout.strip():
+                raise EnvError("Docker container exited before becoming ready")
+
+            check = self._exec_text(
+                "DISPLAY=:0 xset q >/dev/null 2>&1 && "
+                "pgrep -f x11vnc >/dev/null 2>&1 && "
+                "pgrep -f websockify >/dev/null 2>&1",
+                timeout=10,
+            )
+            if check.returncode == 0:
+                logger.info("Docker desktop ready")
+                return
+            last_error = (check.stderr or "desktop services not running").strip()
+            time.sleep(1)
+
+        raise EnvError(
+            f"Docker desktop did not become ready within {self.DOCKER_READY_TIMEOUT}s: {last_error}"
+        )
+
+    def __enter__(self) -> "DockerEnv":
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.close()
+
+
+# ---------------------------------------------------------------------------
 # Env — main interface for VM operations
 # ---------------------------------------------------------------------------
 
@@ -514,10 +846,14 @@ class Env:
     @classmethod
     def create(cls, task_id: str = None, env_vars: dict = None,
                ssh_gateway: dict = None, local_executor: dict = None) -> "Env":
-        """Create a new VM. Uses LocalExecutor by default (direct connection, no SSH).
+        """Create a new VM (Aliyun) or Docker container (when ENV_BACKEND=docker).
 
+        Set ENV_BACKEND=docker to use local Docker instead of Aliyun ECS.
         Pass ssh_gateway dict to use legacy SSH gateway mode (e.g., running from Mac).
         """
+        if os.getenv("ENV_BACKEND", "").strip().lower() == "docker":
+            return DockerEnv.create(task_id=task_id)
+
         if env_vars is None:
             env_vars = _collect_aliyun_env_vars()
 
@@ -559,11 +895,16 @@ class Env:
 
     @classmethod
     def from_config(cls, config_path: Union[str, Path]) -> "Env":
-        """Reconnect to existing VM from env_config.json.
+        """Reconnect to existing VM (or Docker container) from env_config.json.
 
-        Connects directly to VM IP when no ssh_gateway in config (default for server-side).
-        Falls back to SSH tunnel if ssh_gateway is present (legacy Mac usage).
+        Dispatches to DockerEnv.from_config() when provider_name == "docker".
+        Otherwise connects directly to VM IP (or via SSH tunnel for legacy Mac usage).
         """
+        with open(config_path) as _f:
+            _raw = json.load(_f)
+        if _raw.get("provider_name") == "docker":
+            return DockerEnv.from_config(config_path)
+
         config = EnvConfig.load(config_path)
         gateway = None
 
@@ -720,7 +1061,16 @@ class Env:
 
     @staticmethod
     def delete_instance(config_path: Union[str, Path], env_vars: dict = None) -> None:
-        """Delete VM instance using saved config. Used by orchestrator for cleanup."""
+        """Delete VM instance (Aliyun) or Docker container using saved config."""
+        try:
+            with open(config_path) as _f:
+                _raw = json.load(_f)
+            if _raw.get("provider_name") == "docker":
+                DockerEnv.delete_instance(config_path)
+                return
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
         config = EnvConfig.load(config_path)
         if not config.instance_id:
             logger.warning("No instance_id in config — skipping VM cleanup")

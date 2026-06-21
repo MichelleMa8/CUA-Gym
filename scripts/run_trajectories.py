@@ -196,8 +196,8 @@ def run_one_task(task_dir: Path, traj_root: Path) -> float:
 
         history = []
         for step in range(MAX_STEPS):
-            screenshot_data = env.screenshot()
-            screenshot_b64 = screenshot_data.get("screenshot", "")
+            screenshot_bytes = env.screenshot()
+            screenshot_b64 = base64.b64encode(screenshot_bytes).decode() if screenshot_bytes else ""
             screenshots_b64.append(screenshot_b64)
 
             action_msg = call_holo(instruction, screenshot_b64, history)
