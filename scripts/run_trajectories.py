@@ -37,6 +37,8 @@ import base64
 import json
 import os
 import re
+import shlex
+import signal
 import sys
 import threading
 import time
@@ -65,6 +67,56 @@ MAX_STEPS = 15
 HISTORY_N = 2         # steps that keep their screenshot in conversation turns
 SUMMARY_INTERVAL = 10 # compress this many completed steps into a summary block
 _MAX_RETRY = 3        # API call retries
+
+# ---------------------------------------------------------------------------
+# Active environment registry — used for cleanup on KeyboardInterrupt
+# ---------------------------------------------------------------------------
+
+_active_envs: set = set()
+_active_envs_lock = threading.Lock()
+
+
+def _register_env(env) -> None:
+    with _active_envs_lock:
+        _active_envs.add(env)
+
+
+def _deregister_env(env) -> None:
+    with _active_envs_lock:
+        _active_envs.discard(env)
+
+
+def _cleanup_envs_on_interrupt() -> None:
+    """Kill all active sandbox/VM environments on interrupt.
+
+    Mirrors run_eval.py's _run_interrupt_cleanup: temporarily ignores
+    further SIGINT/SIGTERM so a second Ctrl-C doesn't abort the cleanup.
+    """
+    print("\nInterrupt received. Cleaning up active environments. Please wait...")
+    old_sigint = signal.getsignal(signal.SIGINT)
+    old_sigterm = signal.getsignal(signal.SIGTERM)
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        with _active_envs_lock:
+            envs = list(_active_envs)
+        cleaned, failed = [], []
+        for env in envs:
+            try:
+                if hasattr(env, "kill"):
+                    env.kill()
+                    cleaned.append(getattr(getattr(env, "config", None), "instance_id", repr(env)))
+            except Exception as exc:
+                failed.append(f"{repr(env)}: {exc}")
+        if cleaned:
+            print(f"  Cleaned up {len(cleaned)} environment(s): {', '.join(str(c) for c in cleaned)}")
+        else:
+            print("  No active environments needed cleanup.")
+        for msg in failed:
+            print(f"  [WARN] cleanup failed — {msg}")
+    finally:
+        signal.signal(signal.SIGINT, old_sigint)
+        signal.signal(signal.SIGTERM, old_sigterm)
 
 _HOLO_SYSTEM_PROMPT = (
     "You are a computer use agent that controls a desktop GUI.\n"
@@ -558,27 +610,59 @@ def execute_action(env: Env, action_text: str, screen_w: int = 1920, screen_h: i
 # ---------------------------------------------------------------------------
 
 def setup_env(env: Env, task_dir: Path):
-    """Run the task's initial_setup script on the VM."""
+    """Run the task's initial_setup script on the VM, then honor any sleep steps
+    in task.json's config section (e.g. wait for the app to finish loading)."""
     setup_py = task_dir / "initial_setup.py"
     if setup_py.exists():
         env.run_python(setup_py.read_text())
-        return
+    else:
+        found = False
+        for ext in ["sh", "xlsx", "docx", "pptx"]:
+            setup_file = task_dir / f"initial_setup.{ext}"
+            if setup_file.exists():
+                env.upload(str(setup_file), f"/home/user/initial_setup.{ext}")
+                if ext == "sh":
+                    env.execute(f"bash /home/user/initial_setup.{ext}")
+                found = True
+                break
+        if not found:
+            raise FileNotFoundError(f"No initial_setup file found in {task_dir}")
 
-    for ext in ["sh", "xlsx", "docx", "pptx"]:
-        setup_file = task_dir / f"initial_setup.{ext}"
-        if setup_file.exists():
-            env.upload(str(setup_file), f"/home/user/initial_setup.{ext}")
-            if ext == "sh":
-                env.execute(f"bash /home/user/initial_setup.{ext}")
-            return
+    # Sleep as specified in task.json config (lets background processes like GIMP finish loading)
+    try:
+        task_json = json.loads((task_dir / "task.json").read_text())
+        for step in task_json.get("config", []):
+            if step.get("type") == "sleep":
+                time.sleep(step.get("parameters", {}).get("seconds", 0))
+    except Exception:
+        pass
 
-    raise FileNotFoundError(f"No initial_setup file found in {task_dir}")
+
+def _run_postconfig(env: Env, postconfig: list) -> None:
+    """Execute evaluator.postconfig steps (e.g. ctrl+s to save before scoring)."""
+    for step in postconfig:
+        step_type = step.get("type", "")
+        params = step.get("parameters", {})
+        if step_type == "execute":
+            cmd = params.get("command", [])
+            if isinstance(cmd, list):
+                cmd = shlex.join(str(c) for c in cmd)
+            env.execute(cmd)
+        elif step_type == "sleep":
+            time.sleep(params.get("seconds", 1))
 
 
 def score_env(env: Env, task_dir: Path) -> float:
-    """Upload reward_judge.py and run reward.py on the VM, return the score."""
+    """Upload reward_judge.py, run evaluator postconfig, then run reward.py."""
     repo_root = Path(__file__).parent.parent
     env.upload(str(repo_root / "utils" / "reward_judge.py"), "/tmp/reward_judge.py")
+
+    # Run postconfig steps defined in task.json evaluator (e.g. ctrl+s to save)
+    task_json = json.loads((task_dir / "task.json").read_text())
+    postconfig = task_json.get("evaluator", {}).get("postconfig", [])
+    if postconfig:
+        _run_postconfig(env, postconfig)
+
     reward_code = (task_dir / "reward.py").read_text()
     result = env.run_python(reward_code)
     output = result.get("output", "") or ""
@@ -598,48 +682,28 @@ def score_env(env: Env, task_dir: Path) -> float:
                 return float(line)
             except ValueError:
                 continue
+    err = (result.get("error") or "").strip()
+    rc = result.get("returncode", 0)
+    print(f"  [WARN] reward.py produced no parseable score (rc={rc})"
+          + (f": {err[:200]}" if err else f"; output={output[:200]!r}"))
     return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Output helpers
-# ---------------------------------------------------------------------------
-
-def save_trajectory(
-    task_id: str,
-    app: str,
-    actions: list[dict],
-    screenshots_b64: list[str],
-    reward: float,
-    traj_root: Path,
-) -> None:
-    """Write images/, actions.json, task_summary.json under traj_root/app/task_id/."""
-    task_out = traj_root / app / task_id
-
-    # images/
-    images_dir = task_out / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
-    for i, b64 in enumerate(screenshots_b64):
-        img_bytes = base64.b64decode(b64)
-        (images_dir / f"{i:04d}.png").write_bytes(img_bytes)
-
-    # actions.json
-    (task_out / "actions.json").write_text(
-        json.dumps(actions, ensure_ascii=False, indent=2)
-    )
-
-    # task_summary.json
-    (task_out / "task_summary.json").write_text(
-        json.dumps({"trajectory_id": task_id, "reward": reward}, indent=2)
-    )
 
 
 # ---------------------------------------------------------------------------
 # Core runner
 # ---------------------------------------------------------------------------
 
-def run_one_task(task_dir: Path, traj_root: Path, max_steps: int = MAX_STEPS) -> float:
-    """Run a single task and persist trajectory to disk. Returns the reward score."""
+def run_one_task(
+    task_dir: Path,
+    traj_root: Path,
+    max_steps: int = MAX_STEPS,
+    force: bool = False,
+) -> tuple[float, bool]:
+    """Run a single task and persist trajectory to disk.
+
+    Returns (reward, skipped). skipped=True means task_summary.json already
+    existed and force=False, so the task was not re-run.
+    """
     task_json = json.loads((task_dir / "task.json").read_text())
     instruction = task_json.get("instruction", task_json.get("task_instruction", ""))
     task_id = task_dir.name
@@ -648,11 +712,15 @@ def run_one_task(task_dir: Path, traj_root: Path, max_steps: int = MAX_STEPS) ->
     task_out = traj_root / app / task_id
     images_dir = task_out / "images"
 
-    # Skip if already done
-    if (task_out / "task_summary.json").exists():
-        existing = json.loads((task_out / "task_summary.json").read_text())
-        print(f"  [SKIP] {task_id}  (reward={existing.get('reward')})")
-        return existing.get("reward", 0.0)
+    # Skip if already done (unless --force)
+    summary_file = task_out / "task_summary.json"
+    if summary_file.exists():
+        if force:
+            summary_file.unlink()
+        else:
+            existing = json.loads(summary_file.read_text())
+            print(f"  [SKIP] {task_id}  (reward={existing.get('reward')})")
+            return existing.get("reward", 0.0), True
 
     # Clear any partial run leftover before starting fresh
     if images_dir.exists():
@@ -667,6 +735,7 @@ def run_one_task(task_dir: Path, traj_root: Path, max_steps: int = MAX_STEPS) ->
     reward = 0.0
 
     env = Env.create(task_id=task_id)
+    _register_env(env)
     try:
         env.save_config(env_config_path)
         setup_env(env, task_dir)
@@ -716,6 +785,7 @@ def run_one_task(task_dir: Path, traj_root: Path, max_steps: int = MAX_STEPS) ->
         reward = score_env(env, task_dir)
 
     finally:
+        _deregister_env(env)
         # Prefer killing the in-memory object directly so cleanup works even if
         # save_config() never wrote the config file (e.g. disk-full on /tmp).
         if hasattr(env, "kill"):
@@ -731,7 +801,7 @@ def run_one_task(task_dir: Path, traj_root: Path, max_steps: int = MAX_STEPS) ->
     (task_out / "task_summary.json").write_text(
         json.dumps({"trajectory_id": task_id, "reward": reward}, indent=2)
     )
-    return reward
+    return reward, False
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +852,11 @@ def main():
         metavar="N",
         help="Run N tasks in parallel using threads (default: 1).",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run tasks that already have a task_summary.json (overwrites existing results).",
+    )
     args = parser.parse_args()
 
     if args.e2b_api_key:
@@ -822,6 +897,7 @@ def main():
     total = len(task_ids)
     counters = {"done": 0, "skipped": 0, "failed": 0, "index": 0}
     counter_lock = threading.Lock()
+    force = args.force
 
     def run_one(task_id: str) -> None:
         with counter_lock:
@@ -837,10 +913,14 @@ def main():
 
         print(f"  [{idx}/{total}] [RUN]  {task_id}")
         try:
-            reward = run_one_task(task_dir, traj_root, max_steps=max_steps)
-            print(f"  [DONE] {task_id}  reward={reward:.4f}")
-            with counter_lock:
-                counters["done"] += 1
+            reward, skipped = run_one_task(task_dir, traj_root, max_steps=max_steps, force=force)
+            if skipped:
+                with counter_lock:
+                    counters["skipped"] += 1
+            else:
+                print(f"  [DONE] {task_id}  reward={reward:.4f}")
+                with counter_lock:
+                    counters["done"] += 1
         except Exception as exc:
             print(f"  [FAIL] {task_id}  {exc}")
             with counter_lock:
@@ -866,7 +946,7 @@ def main():
             else:
                 pool.shutdown(wait=True)
     except KeyboardInterrupt:
-        print("\nInterrupted by user.")
+        _cleanup_envs_on_interrupt()
         sys.exit(130)
 
     print()
