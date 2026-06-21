@@ -50,11 +50,21 @@ DEFAULT_TASKS_DIR = Path(
     "/lcars/home/q/qianranm/research/GUI/CUA-Gym/data/cua_gym_all/cua_gym_tasks"
 )
 OUTPUT_BASE = Path("/lcars/home/q/qianranm/research/GUI/CUA-Gym/data")
+TASK_DONE_FILE = OUTPUT_BASE / "task_done.json"
 
 
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
+
+def load_done_task_ids() -> set[str]:
+    """Load already-completed task IDs from task_done.json, if it exists."""
+    if not TASK_DONE_FILE.exists():
+        return set()
+    with open(TASK_DONE_FILE) as f:
+        data = json.load(f)
+    return set(data.get("task_ids", []))
+
 
 def load_all_tasks(tasks_dir: Path) -> list[dict]:
     tasks = []
@@ -251,6 +261,14 @@ def main() -> None:
     print("Loading tasks...")
     tasks = load_all_tasks(tasks_dir)
     print(f"  Loaded {len(tasks):,} tasks")
+
+    done_ids = load_done_task_ids()
+    if done_ids:
+        before = len(tasks)
+        tasks = [t for t in tasks if t.get("id") not in done_ids]
+        print(f"  Excluded {before - len(tasks):,} already-done tasks ({len(tasks):,} remaining)")
+    else:
+        print(f"  No task_done.json found or empty — skipping exclusion")
     print()
 
     print("Selecting tasks...")

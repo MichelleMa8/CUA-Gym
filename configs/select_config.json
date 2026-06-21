@@ -3,25 +3,25 @@
   "seed": 999,
   "apps": {
     "gimp": {
-      "n": 30
+      "n": 0
     },
     "libreoffice_calc": {
-      "n": 50
+      "n": 0
     },
     "libreoffice_impress": {
-      "n": 50
+      "n": 0
     },
     "libreoffice_writer": {
-      "n": 50
+      "n": 0
     },
     "multi_apps": {
       "n": 50
     },
     "os": {
-      "n": 2
+      "n": 0
     },
     "vlc": {
-      "n": 50
+      "n": 0
     },
     "vscode": {
       "n": 50

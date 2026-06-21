@@ -38,7 +38,9 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -700,7 +702,15 @@ def run_one_task(task_dir: Path, traj_root: Path, max_steps: int = MAX_STEPS) ->
         reward = score_env(env, task_dir)
 
     finally:
-        Env.delete_instance(env_config_path)
+        # Prefer killing the in-memory object directly so cleanup works even if
+        # save_config() never wrote the config file (e.g. disk-full on /tmp).
+        if hasattr(env, "kill"):
+            try:
+                env.kill()
+            except Exception as _exc:
+                print(f"  [WARN] env.kill() failed: {_exc}")
+        else:
+            Env.delete_instance(env_config_path)
 
     # Write final summary files (images already saved per-step above)
     (task_out / "actions.json").write_text(json.dumps(actions, ensure_ascii=False, indent=2))
@@ -751,6 +761,13 @@ def main():
         metavar="N",
         help=f"Max agent steps per task (default: {MAX_STEPS}).",
     )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Run N tasks in parallel using threads (default: 1).",
+    )
     args = parser.parse_args()
 
     if args.e2b_api_key:
@@ -779,32 +796,67 @@ def main():
     traj_root = run_dir / "trajectory"
     traj_root.mkdir(parents=True, exist_ok=True)
 
+    parallel = max(1, args.parallel)
+
     print(f"Run dir    : {run_dir}")
     print(f"Tasks dir  : {tasks_dir}")
     print(f"Model URL  : {HOLO_BASE_URL}")
     print(f"Tasks to run: {len(task_ids)}")
+    print(f"Parallel   : {parallel}")
     print()
 
     total = len(task_ids)
-    done = skipped = failed = 0
-    for idx, task_id in enumerate(task_ids, 1):
+    counters = {"done": 0, "skipped": 0, "failed": 0, "index": 0}
+    counter_lock = threading.Lock()
+
+    def run_one(task_id: str) -> None:
+        with counter_lock:
+            counters["index"] += 1
+            idx = counters["index"]
+
         task_dir = tasks_dir / task_id
         if not task_dir.exists():
             print(f"  [{idx}/{total}] [MISS] {task_id}  (task dir not found)")
-            failed += 1
-            continue
+            with counter_lock:
+                counters["failed"] += 1
+            return
 
         print(f"  [{idx}/{total}] [RUN]  {task_id}")
         try:
             reward = run_one_task(task_dir, traj_root, max_steps=max_steps)
             print(f"  [DONE] {task_id}  reward={reward:.4f}")
-            done += 1
+            with counter_lock:
+                counters["done"] += 1
         except Exception as exc:
             print(f"  [FAIL] {task_id}  {exc}")
-            failed += 1
+            with counter_lock:
+                counters["failed"] += 1
+
+    try:
+        if parallel == 1:
+            for task_id in task_ids:
+                run_one(task_id)
+        else:
+            pool = ThreadPoolExecutor(max_workers=parallel)
+            futures = {pool.submit(run_one, task_id): task_id for task_id in task_ids}
+            try:
+                for future in as_completed(futures):
+                    task_id = futures[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        print(f"  >> EXCEPTION {task_id}: {exc}")
+            except BaseException:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                pool.shutdown(wait=True)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+        sys.exit(130)
 
     print()
-    print(f"Finished — done={done}  skipped={skipped}  failed={failed}")
+    print(f"Finished — done={counters['done']}  skipped={counters['skipped']}  failed={counters['failed']}")
     print(f"Trajectories saved to: {traj_root}")
 
 
