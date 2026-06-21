@@ -581,10 +581,24 @@ def score_env(env: Env, task_dir: Path) -> float:
     env.upload(str(repo_root / "utils" / "reward_judge.py"), "/tmp/reward_judge.py")
     reward_code = (task_dir / "reward.py").read_text()
     result = env.run_python(reward_code)
-    try:
-        return float(result.get("output", "0").strip())
-    except ValueError:
-        return 0.0
+    output = result.get("output", "") or ""
+    # Most reward.py files print "REWARD: X.X" or "reward:X.X" — parse that first.
+    for line in reversed(output.splitlines()):
+        m = re.match(r"reward\s*:\s*([\d.]+)", line.strip(), re.IGNORECASE)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                pass
+    # Fallback: try parsing the last non-empty line as a plain float.
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if line:
+            try:
+                return float(line)
+            except ValueError:
+                continue
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
