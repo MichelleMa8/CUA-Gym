@@ -6,16 +6,16 @@
       "n": 0
     },
     "libreoffice_calc": {
-      "n": 0
+      "n": 30
     },
     "libreoffice_impress": {
-      "n": 0
+      "n": 30
     },
     "libreoffice_writer": {
-      "n": 0
+      "n": 30
     },
     "multi_apps": {
-      "n": 50
+      "n": 30
     },
     "os": {
       "n": 0
@@ -24,10 +24,10 @@
       "n": 0
     },
     "vscode": {
-      "n": 50
+      "n": 30
     },
     "pdf": {
-      "n": 100
+      "n": 30
     }
   }
 }

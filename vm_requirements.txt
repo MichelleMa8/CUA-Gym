@@ -79,6 +79,7 @@ beautifulsoup4
 psutil
 chardet
 colorama
+python-dateutil
 imghdr        # Python 3.13 stdlib removal backport
 
 # Heavy ML (optional, install separately if needed)

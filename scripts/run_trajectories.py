@@ -64,7 +64,7 @@ DEFAULT_TASKS_DIR = Path(
 HOLO_BASE_URL = os.getenv("HOLO_BASE_URL", "http://localhost:8000/v1")
 HOLO_MODEL = os.getenv("HOLO_MODEL", "holo-3.1")
 MAX_STEPS = 15
-HISTORY_N = 2         # steps that keep their screenshot in conversation turns
+HISTORY_N = 3         # steps that keep their screenshot in conversation turns
 SUMMARY_INTERVAL = 10 # compress this many completed steps into a summary block
 _MAX_RETRY = 3        # API call retries
 
@@ -139,7 +139,17 @@ _HOLO_SYSTEM_PROMPT = (
     "  wait_desktop             — {tool_name, seconds}\n"
     "  answer                   — {tool_name, content}\n"
     "  update_plan              — {tool_name, content}\n\n"
-    "Think step by step, then output the best action."
+    "Think step by step, then output the best action.\n\n"
+    "IMPORTANT: Before calling `answer`, make sure all file changes are saved to "
+    "disk (e.g. File → Export As / Ctrl+Shift+E in GIMP, Ctrl+S in most apps). "
+    "Unsaved changes will not be evaluated.\n\n"
+    "IMPORTANT — LibreOffice file format: When working with LibreOffice Calc, "
+    "Impress, or Writer, always save files in their ORIGINAL Microsoft Office "
+    "format (.xlsx, .pptx, .docx). Use Ctrl+S to save. If a dialog appears "
+    "with the title 'Keep Current Format?' or asking whether to keep the "
+    "Microsoft format, ALWAYS click the 'Keep Current Format!' button (do NOT "
+    "choose 'Use ODF Format!'). Saving in ODF format will cause evaluation to "
+    "fail because the grader expects the original file format."
 )
 
 _STEP_SCHEMA = {
@@ -577,6 +587,47 @@ def _tool_call_to_pyautogui(tool: dict, screen_w: int, screen_h: int) -> list[st
     return code if code else ["WAIT"]
 
 
+def _dismiss_libreoffice_format_dialog(env) -> None:
+    """Press Enter to dismiss the LibreOffice 'Keep Current Format?' dialog.
+
+    Called after any Ctrl+S action so that LibreOffice keeps the original
+    .xlsx/.pptx/.docx format instead of switching to ODF.  Safe to call even
+    when no dialog is present — the keystroke is ignored by a focused document.
+    """
+    time.sleep(0.6)
+    env.run_python("import pyautogui; pyautogui.press('return')")
+    time.sleep(0.3)
+
+
+def _force_save_before_score(env) -> None:
+    """Send Ctrl+S to the active window just before scoring.
+
+    Catches the common failure mode where the agent completes the task but
+    forgets to save.  The keystroke is a no-op when no file is modified.
+    After the save we dismiss any LibreOffice 'Keep Current Format?' dialog
+    so the file is written in the original Microsoft format (.xlsx/.pptx/.docx).
+    """
+    try:
+        env.run_python("import pyautogui; pyautogui.hotkey('ctrl', 's')")
+        # Wait for the LibreOffice format dialog to appear (if any).
+        time.sleep(1.0)
+        # Dismiss with Enter — accepts 'Keep Current Format!' (the default button).
+        env.run_python("import pyautogui; pyautogui.press('return')")
+        # Give LibreOffice time to finish writing the file.
+        time.sleep(0.8)
+    except Exception as exc:
+        print(f"  [WARN] _force_save_before_score failed: {exc}")
+
+
+def _action_is_ctrl_s(tool: dict) -> bool:
+    """Return True when the tool_call is a Ctrl+S (or Ctrl+Shift+S) save."""
+    name = (tool.get("tool_name") or "").lower().strip()
+    if name not in ("hotkey_desktop", "key"):
+        return False
+    keys = [k.lower() for k in (tool.get("keys") or [])]
+    return "ctrl" in keys and "s" in keys
+
+
 def execute_action(env: Env, action_text: str, screen_w: int = 1920, screen_h: int = 1080) -> bool:
     """Parse Holo JSON output and execute on the VM via pyautogui.
 
@@ -602,6 +653,12 @@ def execute_action(env: Env, action_text: str, screen_w: int = 1920, screen_h: i
         + "\n".join(code_lines)
     )
     env.run_python(script)
+
+    # After Ctrl+S, dismiss any "Keep Current Format?" dialog so LibreOffice
+    # saves in the original Microsoft format (.xlsx/.pptx/.docx).
+    if _action_is_ctrl_s(tool):
+        _dismiss_libreoffice_format_dialog(env)
+
     return False
 
 
@@ -628,18 +685,33 @@ def setup_env(env: Env, task_dir: Path):
         if not found:
             raise FileNotFoundError(f"No initial_setup file found in {task_dir}")
 
-    # Sleep as specified in task.json config (lets background processes like GIMP finish loading)
+    # Process config steps from task.json: open/launch GUI apps and sleep.
+    # "open" and "launch" were previously ignored, leaving apps like LibreOffice
+    # unopened even after initial_setup.py created the required files.
     try:
         task_json = json.loads((task_dir / "task.json").read_text())
         for step in task_json.get("config", []):
-            if step.get("type") == "sleep":
-                time.sleep(step.get("parameters", {}).get("seconds", 0))
+            step_type = step.get("type")
+            params = step.get("parameters", {})
+            if step_type == "sleep":
+                time.sleep(params.get("seconds", 0))
+            elif step_type == "open":
+                path = params.get("path", "")
+                if path:
+                    env.launch(f"xdg-open {shlex.quote(path)}")
+            elif step_type == "launch":
+                cmd = params.get("command", [])
+                if isinstance(cmd, list):
+                    cmd = shlex.join(str(c) for c in cmd)
+                if cmd:
+                    env.launch(cmd)
     except Exception:
         pass
 
 
 def _run_postconfig(env: Env, postconfig: list) -> None:
     """Execute evaluator.postconfig steps (e.g. ctrl+s to save before scoring)."""
+    sent_ctrl_s = False
     for step in postconfig:
         step_type = step.get("type", "")
         params = step.get("parameters", {})
@@ -648,8 +720,16 @@ def _run_postconfig(env: Env, postconfig: list) -> None:
             if isinstance(cmd, list):
                 cmd = shlex.join(str(c) for c in cmd)
             env.execute(cmd)
+            if "ctrl" in cmd.lower() and "s" in cmd.lower():
+                sent_ctrl_s = True
         elif step_type == "sleep":
             time.sleep(params.get("seconds", 1))
+    # LibreOffice shows a "Keep Current Format?" dialog when saving as .xlsx.
+    # Dismiss it with Enter so the file is actually written before reward.py reads it.
+    if sent_ctrl_s:
+        time.sleep(0.5)
+        env.execute("python3 -c \"import pyautogui; pyautogui.press('return')\"")
+        time.sleep(0.5)
 
 
 def score_env(env: Env, task_dir: Path) -> float:
@@ -676,8 +756,10 @@ def score_env(env: Env, task_dir: Path) -> float:
     result = env.run_python(reward_code)
     output = result.get("output", "") or ""
     # Most reward.py files print "REWARD: X.X" or "reward:X.X" — parse that first.
+    # Use re.search (not re.match) so "REWARD:" is found even when prefixed by
+    # status symbols like "✗ File missing → REWARD: 0.0".
     for line in reversed(output.splitlines()):
-        m = re.match(r"reward\s*:\s*([\d.]+)", line.strip(), re.IGNORECASE)
+        m = re.search(r"reward\s*:\s*([\d.]+)", line.strip(), re.IGNORECASE)
         if m:
             try:
                 return float(m.group(1))
@@ -767,7 +849,25 @@ def run_one_task(
             "summary_blocks": [],
             "summary_coverage": 0,
         }
+
+        # E2B sandbox keepalive: extend timeout every N steps so long tasks
+        # don't expire mid-run.  set_timeout resets the TTL from *now*.
+        _E2B_KEEPALIVE_INTERVAL = 10
+        _e2b_sandbox = getattr(env, "_sandbox", None)
+
         for step in range(max_steps):
+            # Renew E2B sandbox lifetime periodically.
+            if (
+                _e2b_sandbox is not None
+                and step > 0
+                and step % _E2B_KEEPALIVE_INTERVAL == 0
+            ):
+                try:
+                    _e2b_sandbox.set_timeout(3600)
+                    print(f"  [INFO] E2B sandbox timeout renewed at step {step}")
+                except Exception as _exc:
+                    print(f"  [WARN] E2B timeout renewal failed at step {step}: {_exc}")
+
             screenshot_bytes = env.screenshot()
 
             # Save screenshot immediately — no waiting until the end
@@ -791,6 +891,8 @@ def run_one_task(
 
             time.sleep(0.5)
 
+        # Force-save before scoring in case the agent forgot to press Ctrl+S.
+        _force_save_before_score(env)
         reward = score_env(env, task_dir)
 
     finally:
