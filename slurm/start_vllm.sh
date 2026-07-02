@@ -25,10 +25,12 @@ conda activate gui
 # pip install vllm -q
 
 python -m vllm.entrypoints.openai.api_server \
-  --model Hcompany/Holo-3.1-35B-A3B \
+  --model Qwen/Qwen3.6-35B-A3B \
   --served-model-name holo-3.1 \
   --tensor-parallel-size 8 \
   --max-model-len 16384 \
   --dtype bfloat16 \
   --port 8000 \
   --host 0.0.0.0
+
+# Hcompany/Holo-3.1-35B-A3B

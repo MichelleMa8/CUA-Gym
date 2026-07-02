@@ -17,6 +17,10 @@ Usage:
     # Use local Docker containers
     python scripts/run_trajectories.py --run-dir ... --env-backend docker
 
+    # Action-history summarization is ON by default (needed for small-context
+    # models like Holo-3.1). Disable it for large-context models like Qwen3.6:
+    python scripts/run_trajectories.py --run-dir ... --no-summarize-history
+
     # Override tasks source directory
     python scripts/run_trajectories.py --run-dir ... --tasks-dir /path/to/cua_gym_tasks
 
@@ -67,6 +71,8 @@ MAX_STEPS = 15
 HISTORY_N = 3         # steps that keep their screenshot in conversation turns
 SUMMARY_INTERVAL = 10 # compress this many completed steps into a summary block
 _MAX_RETRY = 3        # API call retries
+
+ENABLE_HISTORY_SUMMARY = True  # set via --no-summarize-history; needed for small-context models
 
 # ---------------------------------------------------------------------------
 # Active environment registry — used for cleanup on KeyboardInterrupt
@@ -411,7 +417,11 @@ def _call_holo_api(messages: list) -> tuple:
 
 
 def call_holo(instruction: str, current_b64: str, state: dict) -> tuple:
-    """Call Holo-3.1 with history summarization and image pruning.
+    """Call the model with image pruning and optional history summarization.
+
+    History summarization (compressing old steps into a text block, gated by
+    ENABLE_HISTORY_SUMMARY / --no-summarize-history) is on by default for
+    small-context models like Holo-3.1; large-context models can disable it.
 
     state keys: screenshot_b64s, responses, summary_blocks, summary_coverage.
     Returns (action_text, updated_state).
@@ -430,7 +440,7 @@ def call_holo(instruction: str, current_b64: str, state: dict) -> tuple:
     new_summary_coverage = state["summary_coverage"]
 
     unsummarized = len(new_responses) - new_summary_coverage
-    if unsummarized >= SUMMARY_INTERVAL:
+    if ENABLE_HISTORY_SUMMARY and unsummarized >= SUMMARY_INTERVAL:
         start = new_summary_coverage
         end = start + SUMMARY_INTERVAL
         block = _make_summary_block(start, end, new_responses)
@@ -968,12 +978,24 @@ def main():
         action="store_true",
         help="Re-run tasks that already have a task_summary.json (overwrites existing results).",
     )
+    parser.add_argument(
+        "--no-summarize-history",
+        dest="summarize_history",
+        action="store_false",
+        help="Disable compressing old steps into a text summary block once SUMMARY_INTERVAL "
+             "steps accumulate (default: on). Needed for small-context models like Holo-3.1; "
+             "safe to disable for large-context models (e.g. Qwen3.6) that can hold full history.",
+    )
+    parser.set_defaults(summarize_history=True)
     args = parser.parse_args()
 
     if args.e2b_api_key:
         os.environ["E2B_API_KEY"] = args.e2b_api_key
     os.environ["ENV_BACKEND"] = args.env_backend
     max_steps = args.max_steps if args.max_steps is not None else MAX_STEPS
+
+    global ENABLE_HISTORY_SUMMARY
+    ENABLE_HISTORY_SUMMARY = args.summarize_history
 
     run_dir = Path(args.run_dir)
     if not run_dir.exists():
@@ -1003,6 +1025,7 @@ def main():
     print(f"Model URL  : {HOLO_BASE_URL}")
     print(f"Tasks to run: {len(task_ids)}")
     print(f"Parallel   : {parallel}")
+    print(f"Summarize history: {ENABLE_HISTORY_SUMMARY}")
     print()
 
     total = len(task_ids)
