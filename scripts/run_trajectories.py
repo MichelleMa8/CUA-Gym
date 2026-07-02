@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-Collect trajectories using Holo-3.1-35B-A3B on CUA-Gym task bundles.
+Collect trajectories on CUA-Gym task bundles using a pluggable model backend
+(Holo-3.1-35B-A3B by default, or MiniMax M3).
 
 Usage:
-    # Run tasks selected by select_tasks.py
+    # Run tasks selected by select_tasks.py (defaults to Holo-3.1)
     python scripts/run_trajectories.py --run-dir data/run-20260620_185032
 
     # Override vLLM endpoint (env var or CLI flag)
     python scripts/run_trajectories.py --run-dir ... --model-url http://nlpgpu06:8000
     HOLO_BASE_URL=http://nlpgpu06:8000/v1 python scripts/run_trajectories.py --run-dir ...
+
+    # Use MiniMax M3 instead of Holo
+    python scripts/run_trajectories.py --run-dir ... --model-provider minimax_m3
+    MINIMAX_API_KEY=... python scripts/run_trajectories.py --run-dir ... --model-provider minimax_m3
 
     # Use e2b cloud sandboxes instead of Aliyun / Docker
     python scripts/run_trajectories.py --run-dir ... --env-backend e2b
@@ -49,8 +54,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import requests
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
@@ -60,19 +63,14 @@ except ModuleNotFoundError:
     pass
 
 from utils.env import Env
+from holo_model import HoloAgent
+from minimax_model import MinimaxAgent
 
 DEFAULT_TASKS_DIR = Path(
     "/lcars/home/q/qianranm/research/GUI/CUA-Gym/data/cua_gym_all/cua_gym_tasks"
 )
 
-HOLO_BASE_URL = os.getenv("HOLO_BASE_URL", "http://localhost:8000/v1")
-HOLO_MODEL = os.getenv("HOLO_MODEL", "holo-3.1")
 MAX_STEPS = 15
-HISTORY_N = 3         # steps that keep their screenshot in conversation turns
-SUMMARY_INTERVAL = 10 # compress this many completed steps into a summary block
-_MAX_RETRY = 3        # API call retries
-
-ENABLE_HISTORY_SUMMARY = True  # set via --no-summarize-history; needed for small-context models
 
 # ---------------------------------------------------------------------------
 # Active environment registry — used for cleanup on KeyboardInterrupt
@@ -124,77 +122,6 @@ def _cleanup_envs_on_interrupt() -> None:
         signal.signal(signal.SIGINT, old_sigint)
         signal.signal(signal.SIGTERM, old_sigterm)
 
-_HOLO_SYSTEM_PROMPT = (
-    "You are a computer use agent that controls a desktop GUI.\n"
-    "At each step you receive a screenshot and output a structured action.\n"
-    "All coordinates are integers in [0, 1000] (normalized to screen size).\n\n"
-    "Available tools and their parameters:\n"
-    "  click_desktop            — {tool_name, x, y, button}  button: \"left\"(default) or \"right\"\n"
-    "  double_click_desktop     — {tool_name, x, y}\n"
-    "  move_to_desktop          — {tool_name, x, y}\n"
-    "  drag_and_drop            — {tool_name, start_x, start_y, end_x, end_y}\n"
-    "  mouse_down_desktop       — {tool_name, x, y, button}\n"
-    "  mouse_up_desktop         — {tool_name, x, y, button}\n"
-    "  write_desktop            — {tool_name, content}\n"
-    "  write_at_desktop         — {tool_name, x, y, content}\n"
-    "  hotkey_desktop           — {tool_name, keys}  (e.g. keys: [\"ctrl\",\"s\"])\n"
-    "  hold_and_tap_key_desktop — {tool_name, hold_key, tap_key}\n"
-    "  key_down_desktop         — {tool_name, key}\n"
-    "  key_up_desktop           — {tool_name, key}\n"
-    "  scroll_desktop           — {tool_name, x, y, direction, amount}  direction: up/down/left/right\n"
-    "  wait_desktop             — {tool_name, seconds}\n"
-    "  answer                   — {tool_name, content}\n"
-    "  update_plan              — {tool_name, content}\n\n"
-    "Think step by step, then output the best action.\n\n"
-    "IMPORTANT: Before calling `answer`, make sure all file changes are saved to "
-    "disk (e.g. File → Export As / Ctrl+Shift+E in GIMP, Ctrl+S in most apps). "
-    "Unsaved changes will not be evaluated.\n\n"
-    "IMPORTANT — LibreOffice file format: When working with LibreOffice Calc, "
-    "Impress, or Writer, always save files in their ORIGINAL Microsoft Office "
-    "format (.xlsx, .pptx, .docx). Use Ctrl+S to save. If a dialog appears "
-    "with the title 'Keep Current Format?' or asking whether to keep the "
-    "Microsoft format, ALWAYS click the 'Keep Current Format!' button (do NOT "
-    "choose 'Use ODF Format!'). Saving in ODF format will cause evaluation to "
-    "fail because the grader expects the original file format."
-)
-
-_STEP_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "note": {"type": "string"},
-        "thought": {"type": "string"},
-        "tool_call": {
-            "type": "object",
-            "properties": {
-                "tool_name": {"type": "string"},
-                "x": {"type": "integer"},
-                "y": {"type": "integer"},
-                "element": {"type": "string"},
-                "button": {"type": "string"},
-                "start_x": {"type": "integer"},
-                "start_y": {"type": "integer"},
-                "end_x": {"type": "integer"},
-                "end_y": {"type": "integer"},
-                "content": {"type": "string"},
-                "text": {"type": "string"},
-                "keys": {"type": "array", "items": {"type": "string"}},
-                "hold_key": {"type": "string"},
-                "tap_key": {"type": "string"},
-                "key": {"type": "string"},
-                "direction": {"type": "string"},
-                "amount": {"type": "integer"},
-                "seconds": {"type": "number"},
-                "success": {"type": "boolean"},
-            },
-            "required": ["tool_name"],
-        },
-    },
-    "required": ["thought", "tool_call"],
-}
-
-_DONE_TOOL_NAMES = {"answer", "done", "finish", "complete", "terminate", "success", "fail", "failure"}
-
-
 # ---------------------------------------------------------------------------
 # App normalization
 # ---------------------------------------------------------------------------
@@ -205,256 +132,6 @@ def canonical_app(app_type: str | None) -> str:
     if "," in app_type:
         return "multi_apps"
     return app_type.strip()
-
-
-# ---------------------------------------------------------------------------
-# Holo interaction
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# History management helpers  (mirrors holo3_agent.py logic)
-# ---------------------------------------------------------------------------
-
-def _describe_tool_fallback(tool: dict) -> str:
-    """Rule-based one-sentence description of a tool_call."""
-    name = (tool.get("tool_name") or "").lower().strip()
-    x, y = tool.get("x"), tool.get("y")
-    coord = f" at ({x}, {y})" if x is not None and y is not None else ""
-    elem = tool.get("element", "")
-    elem_str = f" on '{elem}'" if elem else ""
-    if name in ("click_desktop", "click"):
-        return f"Clicked{elem_str}{coord}."
-    if name in ("double_click_desktop", "double_click"):
-        return f"Double-clicked{elem_str}{coord}."
-    if name in ("write_desktop", "write_at_desktop", "write", "type"):
-        content = tool.get("content") or tool.get("text") or ""
-        short = (content[:60] + "…") if len(content) > 60 else content
-        return f"Typed '{short}'."
-    if name in ("hotkey_desktop", "key"):
-        keys = tool.get("keys") or []
-        return f"Pressed {'+'.join(str(k) for k in keys)}."
-    if name in ("scroll_desktop", "scroll"):
-        direction = tool.get("direction") or "down"
-        amount = tool.get("amount") or 3
-        return f"Scrolled {direction} by {amount}{coord}."
-    if name in ("drag_and_drop", "drag", "left_click_drag"):
-        sx, sy = tool.get("start_x"), tool.get("start_y")
-        ex, ey = tool.get("end_x"), tool.get("end_y")
-        return f"Dragged from ({sx}, {sy}) to ({ex}, {ey})."
-    if name in ("wait_desktop", "wait"):
-        secs = tool.get("seconds") or 2
-        return f"Waited {secs} seconds."
-    if name in ("answer", "done", "finish", "complete", "terminate", "success"):
-        content = tool.get("content", "")
-        return f"Completed task: {(content[:80] + '…') if len(content) > 80 else content}." if content else "Marked task complete."
-    if name in ("fail", "failure"):
-        return "Marked task failed."
-    return f"Performed action '{name}'."
-
-
-def _make_summary_block_rules(start: int, end: int, responses: list) -> str:
-    lines = [f"Steps {start + 1}–{end}:"]
-    for i in range(start, end):
-        try:
-            step = json.loads(responses[i] or "{}")
-            desc = _describe_tool_fallback(step.get("tool_call") or {})
-        except Exception:
-            desc = "(action performed)"
-        lines.append(f"  Step {i + 1}: {desc}")
-    return "\n".join(lines)
-
-
-def _make_summary_block_llm(start: int, end: int, responses: list) -> str:
-    step_lines = []
-    for i in range(start, end):
-        try:
-            step = json.loads(responses[i] or "{}")
-            thought = (step.get("thought") or "").strip()
-            tool_call = json.dumps(step.get("tool_call") or {})
-            step_lines.append(
-                f"Step {i + 1}:\n"
-                f"  Observation & reasoning: {thought}\n"
-                f"  Action taken: {tool_call}"
-            )
-        except Exception:
-            step_lines.append(f"Step {i + 1}: (no data)")
-
-    prompt = (
-        "You are summarizing a GUI agent's action history.\n"
-        "For each step below, write 1–2 sentences that capture:\n"
-        "  1. What was observed on screen and why the action was chosen.\n"
-        "  2. What action was taken.\n"
-        "Be concise (≤ 30 words per step). Do not include any preamble.\n"
-        "Format your entire response as:\n"
-        "Step N: <1–2 sentences>\n\n"
-        + "\n\n".join(step_lines)
-    )
-    resp = requests.post(
-        f"{HOLO_BASE_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {os.getenv('HOLO_API_KEY', 'token')}"},
-        json={
-            "model": HOLO_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 1024,
-            "temperature": 0.0,
-        },
-        timeout=120,
-    )
-    if not resp.ok:
-        raise RuntimeError(f"summary LLM call failed: {resp.status_code} {resp.text[:200]}")
-    raw = resp.json()["choices"][0]["message"]["content"] or ""
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-
-    summaries: dict[int, str] = {}
-    for line in raw.splitlines():
-        m = re.match(r"Step\s+(\d+)\s*:\s*(.+)", line.strip(), re.IGNORECASE)
-        if m:
-            summaries[int(m.group(1))] = m.group(2).strip()
-
-    lines = [f"Steps {start + 1}–{end}:"]
-    for i in range(start, end):
-        step_num = i + 1
-        if step_num in summaries:
-            desc = summaries[step_num]
-        else:
-            try:
-                tool = json.loads(responses[i] or "{}").get("tool_call") or {}
-            except Exception:
-                tool = {}
-            desc = _describe_tool_fallback(tool)
-        lines.append(f"  Step {step_num}: {desc}")
-    return "\n".join(lines)
-
-
-def _make_summary_block(start: int, end: int, responses: list) -> str:
-    try:
-        return _make_summary_block_llm(start, end, responses)
-    except Exception as exc:
-        print(f"  [WARN] LLM summarization failed ({exc}); using rule-based fallback")
-        return _make_summary_block_rules(start, end, responses)
-
-
-def _build_holo_messages(
-    instruction: str,
-    current_b64: str,
-    state: dict,
-    effective_n: int,
-) -> list:
-    """Build messages with summary blocks in system prompt and image pruning."""
-    summary_blocks = state["summary_blocks"]
-    summary_coverage = state["summary_coverage"]
-    screenshot_b64s = state["screenshot_b64s"]
-    responses = state["responses"]
-
-    sys_parts = [f"{_HOLO_SYSTEM_PROMPT}\n\nTask: {instruction}"]
-    if summary_blocks:
-        history_lines = ["[Completed action history]"]
-        for _blk_start, _blk_end, blk_text in summary_blocks:
-            history_lines.append(blk_text)
-        sys_parts.append("\n".join(history_lines))
-    messages: list = [{"role": "system", "content": "\n\n".join(sys_parts)}]
-
-    prev_b64s = screenshot_b64s[summary_coverage:]
-    prev_responses = responses[summary_coverage:]
-    all_b64s = prev_b64s + [current_b64]
-    n = len(all_b64s)
-    image_start = max(0, n - effective_n)
-
-    for i in range(n):
-        is_current = (i == n - 1)
-        if i >= image_start:
-            user_content = [
-                {"type": "text", "text": "<observation>\n"},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{all_b64s[i]}"}},
-                {"type": "text", "text": "\n</observation>"},
-            ]
-        else:
-            user_content = [{"type": "text", "text": "<observation>\n[screenshot omitted]\n</observation>"}]
-        messages.append({"role": "user", "content": user_content})
-        if not is_current and i < len(prev_responses):
-            messages.append({"role": "assistant", "content": prev_responses[i]})
-
-    return messages
-
-
-def _is_context_exceeded(text: str) -> bool:
-    low = text.lower()
-    return "context length" in low or "input length" in low or "maximum context" in low
-
-
-def _call_holo_api(messages: list) -> tuple:
-    """HTTP call to Holo with retry. Returns (response_text, context_exceeded)."""
-    for attempt in range(_MAX_RETRY):
-        try:
-            resp = requests.post(
-                f"{HOLO_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {os.getenv('HOLO_API_KEY', 'token')}"},
-                json={
-                    "model": HOLO_MODEL,
-                    "messages": messages,
-                    "max_tokens": 4096,
-                    "temperature": 0.8,
-                    "structured_outputs": {"json": _STEP_SCHEMA},
-                    "chat_template_kwargs": {"enable_thinking": True},
-                },
-                timeout=120,
-            )
-            if not resp.ok:
-                err_text = resp.text[:500]
-                if _is_context_exceeded(err_text):
-                    return "", True
-                raise RuntimeError(f"{resp.status_code} {resp.reason}: {err_text}")
-            text = resp.json()["choices"][0]["message"]["content"] or ""
-            return text, False
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            if _is_context_exceeded(str(exc)):
-                return "", True
-            if attempt < _MAX_RETRY - 1:
-                time.sleep(5)
-    return "", False
-
-
-def call_holo(instruction: str, current_b64: str, state: dict) -> tuple:
-    """Call the model with image pruning and optional history summarization.
-
-    History summarization (compressing old steps into a text block, gated by
-    ENABLE_HISTORY_SUMMARY / --no-summarize-history) is on by default for
-    small-context models like Holo-3.1; large-context models can disable it.
-
-    state keys: screenshot_b64s, responses, summary_blocks, summary_coverage.
-    Returns (action_text, updated_state).
-    """
-    response_text = ""
-    for effective_n in range(HISTORY_N, 0, -1):
-        messages = _build_holo_messages(instruction, current_b64, state, effective_n)
-        response_text, context_exceeded = _call_holo_api(messages)
-        if not context_exceeded:
-            break
-        print(f"  [WARN] context exceeded with {effective_n} image(s); retrying with {effective_n - 1}")
-
-    new_screenshot_b64s = state["screenshot_b64s"] + [current_b64]
-    new_responses = state["responses"] + [response_text]
-    new_summary_blocks = list(state["summary_blocks"])
-    new_summary_coverage = state["summary_coverage"]
-
-    unsummarized = len(new_responses) - new_summary_coverage
-    if ENABLE_HISTORY_SUMMARY and unsummarized >= SUMMARY_INTERVAL:
-        start = new_summary_coverage
-        end = start + SUMMARY_INTERVAL
-        block = _make_summary_block(start, end, new_responses)
-        new_summary_blocks.append((start, end, block))
-        new_summary_coverage = end
-        print(f"  [INFO] summarized steps {start + 1}–{end}")
-
-    new_state = {
-        "screenshot_b64s": new_screenshot_b64s,
-        "responses": new_responses,
-        "summary_blocks": new_summary_blocks,
-        "summary_coverage": new_summary_coverage,
-    }
-    return response_text, new_state
 
 
 def _tool_call_to_pyautogui(tool: dict, screen_w: int, screen_h: int) -> list[str]:
@@ -797,6 +474,7 @@ def score_env(env: Env, task_dir: Path) -> float:
 def run_one_task(
     task_dir: Path,
     traj_root: Path,
+    agent,
     max_steps: int = MAX_STEPS,
     force: bool = False,
 ) -> tuple[float, bool]:
@@ -853,12 +531,7 @@ def run_one_task(
         screen_w = size.get("width", 1920)
         screen_h = size.get("height", 1080)
 
-        holo_state = {
-            "screenshot_b64s": [],
-            "responses": [],
-            "summary_blocks": [],
-            "summary_coverage": 0,
-        }
+        agent_state = agent.initial_state()
 
         # E2B sandbox keepalive: extend timeout every N steps so long tasks
         # don't expire mid-run.  set_timeout resets the TTL from *now*.
@@ -886,7 +559,7 @@ def run_one_task(
 
             screenshot_b64 = base64.b64encode(screenshot_bytes).decode() if screenshot_bytes else ""
 
-            action_text, holo_state = call_holo(instruction, screenshot_b64, holo_state)
+            action_text, agent_state = agent.call(instruction, screenshot_b64, agent_state)
 
             step_record = {"step": step, "action": action_text}
             actions.append(step_record)
@@ -930,7 +603,7 @@ def run_one_task(
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Collect trajectories with Holo-3.1-35B-A3B")
+    parser = argparse.ArgumentParser(description="Collect trajectories with a pluggable model backend")
     parser.add_argument(
         "--run-dir", required=True, metavar="DIR",
         help="Run directory produced by select_tasks.py (e.g. data/run-20260620_185032). "
@@ -941,10 +614,27 @@ def main():
         help=f"Source of CUA-Gym task bundles (default: {DEFAULT_TASKS_DIR})",
     )
     parser.add_argument(
+        "--model-provider",
+        choices=["holo", "minimax_m3"],
+        default=os.getenv("MODEL_PROVIDER", "holo"),
+        help="Which model backend to drive the agent with: 'holo' (Holo-3.1-35B-A3B, "
+             "default) or 'minimax_m3' (MiniMax M3). Overrides MODEL_PROVIDER env var.",
+    )
+    parser.add_argument(
         "--model-url", default=None, metavar="URL",
-        help="Base URL of the vLLM endpoint, e.g. http://nlpgpu06:8000. "
-             "'/v1' is appended automatically if absent. "
-             "Overrides the HOLO_BASE_URL environment variable.",
+        help="Base URL of the model's chat/completions endpoint, e.g. http://nlpgpu06:8000 "
+             "(Holo) or https://api.minimaxi.com (MiniMax). '/v1' is appended automatically "
+             "if absent. Overrides HOLO_BASE_URL / MINIMAX_BASE_URL depending on --model-provider.",
+    )
+    parser.add_argument(
+        "--model-name", default=None, metavar="NAME",
+        help="Model name/id to request. Overrides HOLO_MODEL / MINIMAX_MODEL depending on "
+             "--model-provider.",
+    )
+    parser.add_argument(
+        "--model-api-key", default=None, metavar="KEY",
+        help="Bearer token for the model API. Overrides HOLO_API_KEY / MINIMAX_API_KEY "
+             "depending on --model-provider.",
     )
     parser.add_argument(
         "--env-backend",
@@ -994,9 +684,6 @@ def main():
     os.environ["ENV_BACKEND"] = args.env_backend
     max_steps = args.max_steps if args.max_steps is not None else MAX_STEPS
 
-    global ENABLE_HISTORY_SUMMARY
-    ENABLE_HISTORY_SUMMARY = args.summarize_history
-
     run_dir = Path(args.run_dir)
     if not run_dir.exists():
         sys.exit(f"Run directory not found: {run_dir}")
@@ -1005,10 +692,25 @@ def main():
     if not task_ids_path.exists():
         sys.exit(f"task_ids.json not found: {task_ids_path}")
 
+    model_url = None
     if args.model_url:
-        global HOLO_BASE_URL
         base = args.model_url.rstrip("/")
-        HOLO_BASE_URL = base if base.endswith("/v1") else f"{base}/v1"
+        model_url = base if base.endswith("/v1") else f"{base}/v1"
+
+    if args.model_provider == "holo":
+        agent = HoloAgent(
+            base_url=model_url,
+            model=args.model_name,
+            api_key=args.model_api_key,
+            enable_history_summary=args.summarize_history,
+        )
+    else:
+        agent = MinimaxAgent(
+            base_url=model_url,
+            model=args.model_name,
+            api_key=args.model_api_key,
+            enable_history_summary=args.summarize_history,
+        )
 
     tasks_dir = Path(args.tasks_dir) if args.tasks_dir else DEFAULT_TASKS_DIR
     if not tasks_dir.exists():
@@ -1022,10 +724,12 @@ def main():
 
     print(f"Run dir    : {run_dir}")
     print(f"Tasks dir  : {tasks_dir}")
-    print(f"Model URL  : {HOLO_BASE_URL}")
+    print(f"Model provider: {args.model_provider}")
+    print(f"Model URL  : {agent.base_url}")
+    print(f"Model name : {agent.model}")
     print(f"Tasks to run: {len(task_ids)}")
     print(f"Parallel   : {parallel}")
-    print(f"Summarize history: {ENABLE_HISTORY_SUMMARY}")
+    print(f"Summarize history: {agent.enable_history_summary}")
     print()
 
     total = len(task_ids)
@@ -1047,7 +751,7 @@ def main():
 
         print(f"  [{idx}/{total}] [RUN]  {task_id}")
         try:
-            reward, skipped = run_one_task(task_dir, traj_root, max_steps=max_steps, force=force)
+            reward, skipped = run_one_task(task_dir, traj_root, agent, max_steps=max_steps, force=force)
             if skipped:
                 with counter_lock:
                     counters["skipped"] += 1
