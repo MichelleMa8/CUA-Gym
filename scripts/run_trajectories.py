@@ -15,6 +15,10 @@ Usage:
     python scripts/run_trajectories.py --run-dir ... --model-provider minimax_m3
     MINIMAX_API_KEY=... python scripts/run_trajectories.py --run-dir ... --model-provider minimax_m3
 
+    # Use Qwen3.7-plus (via Aliyun DashScope) instead of Holo
+    python scripts/run_trajectories.py --run-dir ... --model-provider qwen
+    DASHSCOPE_API_KEY=... python scripts/run_trajectories.py --run-dir ... --model-provider qwen
+
     # Use e2b cloud sandboxes instead of Aliyun / Docker
     python scripts/run_trajectories.py --run-dir ... --env-backend e2b
     python scripts/run_trajectories.py --run-dir ... --env-backend e2b --e2b-api-key <key>
@@ -39,6 +43,7 @@ Output layout (inside --run-dir):
             ...
           actions.json
           task_summary.json   # {"trajectory_id": ..., "reward": ...}
+      summary.json            # run-level rollup: reward buckets + failure counts/reasons
 """
 
 import argparse
@@ -65,6 +70,7 @@ except ModuleNotFoundError:
 from utils.env import Env
 from holo_model import HoloAgent
 from minimax_model import MinimaxAgent
+from qwen_model import QwenAgent
 
 DEFAULT_TASKS_DIR = Path(
     "/lcars/home/q/qianranm/research/GUI/CUA-Gym/data/cua_gym_all/cua_gym_tasks"
@@ -599,6 +605,104 @@ def run_one_task(
 
 
 # ---------------------------------------------------------------------------
+# Run-level summary.json
+# ---------------------------------------------------------------------------
+
+# Ordered (first match wins) list of (category, substrings) used to bucket a
+# failure's exception message. Patterns are lowercase; matched against the
+# lowercased exception text.
+_FAILURE_PATTERNS: list[tuple[str, list[str]]] = [
+    ("task_dir_not_found", ["task dir not found"]),
+    ("e2b_sandbox_lost", ["sandbox was not found", "sandbox timeout", "screenshot failed after"]),
+    ("malformed_model_response", ["'list' object has no attribute 'get'", "object has no attribute 'get'"]),
+    ("invalid_image_url", ["url does not appear to be valid", "invalidparameter"]),
+    ("context_exceeded", ["context length", "maximum context", "input length"]),
+    ("api_rate_limited", ["rate limit", "429"]),
+    ("api_error", ["400 bad request", "401 ", "403 ", "500 ", "502 ", "503 "]),
+    ("connection_error", ["connection", "timed out", "timeout"]),
+]
+
+
+def classify_failure_reason(exc_msg: str) -> str:
+    """Bucket a failure's exception message into a coarse category for summary.json."""
+    low = (exc_msg or "").lower()
+    for category, needles in _FAILURE_PATTERNS:
+        if any(needle in low for needle in needles):
+            return category
+    return "other"
+
+
+def _find_task_summary(traj_root: Path, task_id: str) -> Path | None:
+    for app_dir in traj_root.iterdir():
+        if not app_dir.is_dir():
+            continue
+        candidate = app_dir / task_id / "task_summary.json"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def write_run_summary(
+    traj_root: Path,
+    task_ids: list[str],
+    failure_reasons: dict[str, str],
+) -> Path:
+    """Roll the whole run up into trajectory/summary.json.
+
+    Buckets rewards into ==1 / ==0 / (0,1), and buckets every task that has no
+    task_summary.json (i.e. crashed or was never run) by failure category.
+    """
+    reward_eq_1, reward_eq_0, reward_mid, invalid_reward = [], [], [], []
+    failure_categories: dict[str, list[dict]] = {}
+
+    for task_id in task_ids:
+        summary_path = _find_task_summary(traj_root, task_id)
+        if summary_path is not None:
+            try:
+                reward = json.loads(summary_path.read_text()).get("reward")
+            except Exception:
+                reward = None
+            if reward == 1 or reward == 1.0:
+                reward_eq_1.append(task_id)
+            elif reward == 0 or reward == 0.0:
+                reward_eq_0.append(task_id)
+            elif isinstance(reward, (int, float)) and 0 < reward < 1:
+                reward_mid.append(task_id)
+            else:
+                invalid_reward.append(task_id)
+        else:
+            reason = failure_reasons.get(task_id, "unknown (no exception captured)")
+            category = classify_failure_reason(reason)
+            failure_categories.setdefault(category, []).append(
+                {"task_id": task_id, "reason": reason[:500]}
+            )
+
+    succeeded = len(reward_eq_1) + len(reward_eq_0) + len(reward_mid) + len(invalid_reward)
+    failed = sum(len(items) for items in failure_categories.values())
+
+    summary = {
+        "total_tasks": len(task_ids),
+        "succeeded": succeeded,
+        "failed": failed,
+        "reward": {
+            "eq_1": {"count": len(reward_eq_1), "task_ids": reward_eq_1},
+            "eq_0": {"count": len(reward_eq_0), "task_ids": reward_eq_0},
+            "between_0_and_1": {"count": len(reward_mid), "task_ids": reward_mid},
+            **({"invalid_or_missing": {"count": len(invalid_reward), "task_ids": invalid_reward}}
+               if invalid_reward else {}),
+        },
+        "failure_categories": {
+            category: {"count": len(items), "items": items}
+            for category, items in sorted(failure_categories.items(), key=lambda kv: -len(kv[1]))
+        },
+    }
+
+    out_path = traj_root / "summary.json"
+    out_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False))
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -615,26 +719,29 @@ def main():
     )
     parser.add_argument(
         "--model-provider",
-        choices=["holo", "minimax_m3"],
+        choices=["holo", "minimax_m3", "qwen"],
         default=os.getenv("MODEL_PROVIDER", "holo"),
         help="Which model backend to drive the agent with: 'holo' (Holo-3.1-35B-A3B, "
-             "default) or 'minimax_m3' (MiniMax M3). Overrides MODEL_PROVIDER env var.",
+             "default), 'minimax_m3' (MiniMax M3), or 'qwen' (Qwen3.7-plus via Aliyun "
+             "DashScope). Overrides MODEL_PROVIDER env var.",
     )
     parser.add_argument(
         "--model-url", default=None, metavar="URL",
         help="Base URL of the model's chat/completions endpoint, e.g. http://nlpgpu06:8000 "
-             "(Holo) or https://api.minimaxi.com (MiniMax). '/v1' is appended automatically "
-             "if absent. Overrides HOLO_BASE_URL / MINIMAX_BASE_URL depending on --model-provider.",
+             "(Holo), https://api.minimaxi.com (MiniMax), or "
+             "https://dashscope.aliyuncs.com/compatible-mode (Qwen). '/v1' is appended "
+             "automatically if absent. Overrides HOLO_BASE_URL / MINIMAX_BASE_URL / "
+             "QWEN_BASE_URL depending on --model-provider.",
     )
     parser.add_argument(
         "--model-name", default=None, metavar="NAME",
-        help="Model name/id to request. Overrides HOLO_MODEL / MINIMAX_MODEL depending on "
-             "--model-provider.",
+        help="Model name/id to request. Overrides HOLO_MODEL / MINIMAX_MODEL / QWEN_MODEL "
+             "depending on --model-provider.",
     )
     parser.add_argument(
         "--model-api-key", default=None, metavar="KEY",
-        help="Bearer token for the model API. Overrides HOLO_API_KEY / MINIMAX_API_KEY "
-             "depending on --model-provider.",
+        help="Bearer token for the model API. Overrides HOLO_API_KEY / MINIMAX_API_KEY / "
+             "DASHSCOPE_API_KEY depending on --model-provider.",
     )
     parser.add_argument(
         "--env-backend",
@@ -704,6 +811,13 @@ def main():
             api_key=args.model_api_key,
             enable_history_summary=args.summarize_history,
         )
+    elif args.model_provider == "qwen":
+        agent = QwenAgent(
+            base_url=model_url,
+            model=args.model_name,
+            api_key=args.model_api_key,
+            enable_history_summary=args.summarize_history,
+        )
     else:
         agent = MinimaxAgent(
             base_url=model_url,
@@ -735,6 +849,7 @@ def main():
     total = len(task_ids)
     counters = {"done": 0, "skipped": 0, "failed": 0, "index": 0}
     counter_lock = threading.Lock()
+    failure_reasons: dict[str, str] = {}
     force = args.force
 
     def run_one(task_id: str) -> None:
@@ -747,6 +862,7 @@ def main():
             print(f"  [{idx}/{total}] [MISS] {task_id}  (task dir not found)")
             with counter_lock:
                 counters["failed"] += 1
+                failure_reasons[task_id] = "task dir not found"
             return
 
         print(f"  [{idx}/{total}] [RUN]  {task_id}")
@@ -763,6 +879,7 @@ def main():
             print(f"  [FAIL] {task_id}  {exc}")
             with counter_lock:
                 counters["failed"] += 1
+                failure_reasons[task_id] = str(exc)
 
     try:
         if parallel == 1:
@@ -787,9 +904,12 @@ def main():
         _cleanup_envs_on_interrupt()
         sys.exit(130)
 
+    summary_path = write_run_summary(traj_root, task_ids, failure_reasons)
+
     print()
     print(f"Finished — done={counters['done']}  skipped={counters['skipped']}  failed={counters['failed']}")
     print(f"Trajectories saved to: {traj_root}")
+    print(f"Summary written to: {summary_path}")
 
 
 if __name__ == "__main__":
