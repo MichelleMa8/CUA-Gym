@@ -1,39 +1,131 @@
-"""Shared logic for computer-use-agent model backends.
+"""Shared logic for the Holo computer-use agent backend.
 
-scripts/holo_model.py and scripts/minimax_model.py each implement a thin
-`_call_api` / `_call_summary_api` pair for their own chat/completions
-endpoint and subclass BaseAgent here for everything else: the action-space
-system prompt, the JSON step schema, message assembly (screenshot pruning +
-history-summary blocks), and the context-exceeded retry loop. Keeping this
-in one place means both backends behave identically except for the actual
-HTTP call.
+scripts/holo_model.py implements the HTTP calls and subclasses BaseAgent
+here. Two prompt styles exist:
+
+  - "cua_gym": H Company's official Holo agent harness
+    (https://hub.hcompany.ai/agent-loop). System prompt ends in an
+    <output_format> block embedding STEP_SCHEMA (a discriminated union of
+    per-tool schemas, also enforced server-side via vLLM structured
+    outputs); screenshots arrive in <observation> wrappers; assistant
+    turns replay only the parsed JSON (never reasoning); each executed
+    action is acknowledged with a <tool_output> user message; at most the
+    last 3 screenshots stay inline, older ones become "[screenshot
+    evicted]" placeholders. There is NO history summarization — all text
+    turns stay in context and the model's `note` field is its durable
+    memory across steps.
+  - "osworld": OSWorld's classic screenshot+pyautogui-code baseline,
+    driven by BaseAgent's original message assembly (screenshot pruning +
+    LLM history summarization).
+
+MiniMax M3 / Qwen backends are OSWorld-replica agents with their own
+message handling and do not use this module.
 """
 
 import json
 import re
 
+# ---------------------------------------------------------------------------
+# Holo tool schemas (prompt_style == "cua_gym")
+# ---------------------------------------------------------------------------
+# Discriminated union per the official agent-loop docs: each tool is its own
+# object schema with a constant tool_name (the pydantic-Literal pattern), so
+# vLLM guided decoding enforces per-tool required parameters — not just "any
+# dict with a tool_name string".
+
+_ELEMENT = {"type": "string", "description": "Detailed description of the target UI element"}
+_X = {"type": "integer", "description": "X coordinate as integer in [0, 1000]"}
+_Y = {"type": "integer", "description": "Y coordinate as integer in [0, 1000]"}
+_BUTTON = {"type": "string", "enum": ["left", "right"], "description": 'Mouse button (default "left")'}
+_CONTENT = {"type": "string", "description": "Content to write"}
+
+
+def _tool(name: str, description: str, params: dict, required: list) -> dict:
+    return {
+        "type": "object",
+        "description": description,
+        "properties": {"tool_name": {"const": name}, **params},
+        "required": ["tool_name"] + required,
+    }
+
+
+HOLO_TOOL_SCHEMAS = [
+    _tool("click_desktop", "Click at (x, y)",
+          {"element": _ELEMENT, "x": _X, "y": _Y, "button": _BUTTON},
+          ["element", "x", "y"]),
+    _tool("double_click_desktop", "Double-click at (x, y)",
+          {"element": _ELEMENT, "x": _X, "y": _Y},
+          ["element", "x", "y"]),
+    _tool("move_to_desktop", "Move the mouse cursor to (x, y) without clicking",
+          {"element": _ELEMENT, "x": _X, "y": _Y},
+          ["element", "x", "y"]),
+    _tool("drag_and_drop", "Press at (start_x, start_y), drag to (end_x, end_y) and release",
+          {"element": _ELEMENT,
+           "start_x": {"type": "integer", "description": "Drag start X as integer in [0, 1000]"},
+           "start_y": {"type": "integer", "description": "Drag start Y as integer in [0, 1000]"},
+           "end_x": {"type": "integer", "description": "Drag end X as integer in [0, 1000]"},
+           "end_y": {"type": "integer", "description": "Drag end Y as integer in [0, 1000]"}},
+          ["element", "start_x", "start_y", "end_x", "end_y"]),
+    _tool("mouse_down_desktop", "Press and hold a mouse button at (x, y)",
+          {"element": _ELEMENT, "x": _X, "y": _Y, "button": _BUTTON},
+          ["element", "x", "y"]),
+    _tool("mouse_up_desktop", "Release a mouse button at (x, y)",
+          {"element": _ELEMENT, "x": _X, "y": _Y, "button": _BUTTON},
+          ["element", "x", "y"]),
+    _tool("write_desktop", "Type text into the currently focused element without clicking first",
+          {"content": _CONTENT,
+           "press_enter": {"type": "boolean", "description": "Whether to press Enter after typing (default false)"}},
+          ["content"]),
+    _tool("write_at_desktop", "Click at (x, y), then type text",
+          {"element": _ELEMENT, "x": _X, "y": _Y, "content": _CONTENT},
+          ["element", "x", "y", "content"]),
+    _tool("hotkey_desktop", "Press a key or key combination",
+          {"keys": {"type": "array", "items": {"type": "string"},
+                    "description": 'Keys pressed together, e.g. ["ctrl", "s"]'}},
+          ["keys"]),
+    _tool("hold_and_tap_key_desktop", "Hold one key while tapping another",
+          {"hold_key": {"type": "string", "description": "Key to hold down"},
+           "tap_key": {"type": "string", "description": "Key to tap while holding"}},
+          ["hold_key", "tap_key"]),
+    _tool("key_down_desktop", "Press and hold a keyboard key",
+          {"key": {"type": "string", "description": "Key to press down"}},
+          ["key"]),
+    _tool("key_up_desktop", "Release a keyboard key",
+          {"key": {"type": "string", "description": "Key to release"}},
+          ["key"]),
+    _tool("scroll_desktop", "Scroll at (x, y)",
+          {"x": _X, "y": _Y,
+           "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+           "amount": {"type": "integer", "description": "Scroll amount in wheel clicks (default 3)"}},
+          ["x", "y", "direction"]),
+    _tool("wait_desktop", "Wait for the given number of seconds",
+          {"seconds": {"type": "number", "description": "Seconds to wait"}},
+          ["seconds"]),
+    _tool("answer", "Declare the task finished and provide a final answer",
+          {"content": {"type": "string", "description": "The answer content"}},
+          ["content"]),
+    _tool("update_plan", "Record an updated plan for the remaining steps",
+          {"content": {"type": "string", "description": "The updated plan"}},
+          ["content"]),
+]
+
+_TOOL_LIST_LINES = "\n".join(
+    f"  {t['properties']['tool_name']['const']} — {t['description']}" for t in HOLO_TOOL_SCHEMAS
+)
+
 AGENT_SYSTEM_PROMPT = (
     "You are a computer use agent that controls a desktop GUI.\n"
-    "At each step you receive a screenshot and output a structured action.\n"
-    "All coordinates are integers in [0, 1000] (normalized to screen size).\n\n"
-    "Available tools and their parameters:\n"
-    "  click_desktop            — {tool_name, x, y, button}  button: \"left\"(default) or \"right\"\n"
-    "  double_click_desktop     — {tool_name, x, y}\n"
-    "  move_to_desktop          — {tool_name, x, y}\n"
-    "  drag_and_drop            — {tool_name, start_x, start_y, end_x, end_y}\n"
-    "  mouse_down_desktop       — {tool_name, x, y, button}\n"
-    "  mouse_up_desktop         — {tool_name, x, y, button}\n"
-    "  write_desktop            — {tool_name, content}\n"
-    "  write_at_desktop         — {tool_name, x, y, content}\n"
-    "  hotkey_desktop           — {tool_name, keys}  (e.g. keys: [\"ctrl\",\"s\"])\n"
-    "  hold_and_tap_key_desktop — {tool_name, hold_key, tap_key}\n"
-    "  key_down_desktop         — {tool_name, key}\n"
-    "  key_up_desktop           — {tool_name, key}\n"
-    "  scroll_desktop           — {tool_name, x, y, direction, amount}  direction: up/down/left/right\n"
-    "  wait_desktop             — {tool_name, seconds}\n"
-    "  answer                   — {tool_name, content}\n"
-    "  update_plan              — {tool_name, content}\n\n"
-    "Think step by step, then output the best action.\n\n"
+    "At each step you receive a screenshot of the screen inside an "
+    "<observation> block and must respond with a single JSON object matching "
+    "the schema in <output_format>: a `note` recording task-relevant "
+    "information from the current observation (null if nothing new), a "
+    "`thought` with your reasoning about next steps, and one `tool_call`.\n"
+    "All coordinates are integers in [0, 1000], normalized to the screenshot "
+    "(origin top-left).\n"
+    "Your past reasoning is not kept between steps — use the `note` field to "
+    "carry durable facts forward.\n\n"
+    "Available tools:\n"
+    f"{_TOOL_LIST_LINES}\n\n"
     "IMPORTANT: Before calling `answer`, make sure all file changes are saved to "
     "disk (e.g. File → Export As / Ctrl+Shift+E in GIMP, Ctrl+S in most apps). "
     "Unsaved changes will not be evaluated.\n\n"
@@ -111,60 +203,50 @@ OSWORLD_SYSTEM_PROMPT = (
 
 PROMPT_STYLES = ("cua_gym", "osworld")
 
+# The per-step output object per the official docs: note (nullable, the
+# model's durable memory), thought, and one tool_call from the union above.
 STEP_SCHEMA = {
     "type": "object",
     "properties": {
-        "note": {"type": "string"},
-        "thought": {"type": "string"},
-        "tool_call": {
-            "type": "object",
-            "properties": {
-                "tool_name": {"type": "string"},
-                "x": {"type": "integer"},
-                "y": {"type": "integer"},
-                "element": {"type": "string"},
-                "button": {"type": "string"},
-                "start_x": {"type": "integer"},
-                "start_y": {"type": "integer"},
-                "end_x": {"type": "integer"},
-                "end_y": {"type": "integer"},
-                "content": {"type": "string"},
-                "text": {"type": "string"},
-                "keys": {"type": "array", "items": {"type": "string"}},
-                "hold_key": {"type": "string"},
-                "tap_key": {"type": "string"},
-                "key": {"type": "string"},
-                "direction": {"type": "string"},
-                "amount": {"type": "integer"},
-                "seconds": {"type": "number"},
-                "success": {"type": "boolean"},
-            },
-            "required": ["tool_name"],
+        "note": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "default": None,
+            "description": "Task-relevant information from the previous observation. Empty if nothing new.",
         },
+        "thought": {"type": "string", "description": "Reasoning about next steps"},
+        "tool_call": {"anyOf": HOLO_TOOL_SCHEMAS},
     },
     "required": ["thought", "tool_call"],
 }
 
 DONE_TOOL_NAMES = {"answer", "done", "finish", "complete", "terminate", "success", "fail", "failure"}
 
-JSON_SCHEMA_HINT = (
-    "\n\nYou MUST respond with a single JSON object matching this schema, and "
-    "nothing else (no prose, no markdown code fences):\n" + json.dumps(STEP_SCHEMA)
+# Official pattern: system prompt = render_prompt(tools=...) +
+# "\n\n<output_format>\n```json\n{schema}\n```\n</output_format>"
+OUTPUT_FORMAT_BLOCK = (
+    "\n\n<output_format>\n```json\n" + json.dumps(STEP_SCHEMA) + "\n```\n</output_format>"
 )
 
 
-def resolve_system_prompt(prompt_style: str, needs_json_hint: bool) -> str:
-    """Resolve the system prompt for a prompt_style ("cua_gym" or "osworld").
+def trim_to_last_n_images(messages: list, n: int = 3) -> None:
+    """Official image-budget helper (verbatim from hub.hcompany.ai/agent-loop).
 
-    needs_json_hint: append JSON_SCHEMA_HINT for cua_gym backends that lack
-    guided decoding (Minimax, Qwen) and so must ask for JSON in the prompt
-    itself. Ignored for "osworld", whose whole point is free-text/code output.
+    Keeps at most the last n screenshots inline; older image chunks are
+    replaced in place with a "[screenshot evicted]" text chunk, preserving
+    the surrounding <observation> wrapper text chunks.
     """
-    if prompt_style not in PROMPT_STYLES:
-        raise ValueError(f"Unknown prompt_style: {prompt_style!r} (expected one of {PROMPT_STYLES})")
-    if prompt_style == "osworld":
-        return OSWORLD_SYSTEM_PROMPT
-    return AGENT_SYSTEM_PROMPT + JSON_SCHEMA_HINT if needs_json_hint else AGENT_SYSTEM_PROMPT
+    seen = 0
+    for msg in reversed(messages):
+        if msg["role"] != "user" or not isinstance(msg["content"], list):
+            continue
+        for chunk in msg["content"]:
+            if chunk.get("type") != "image_url":
+                continue
+            seen += 1
+            if seen > n:
+                chunk["type"] = "text"
+                chunk["text"] = "[screenshot evicted]"
+                chunk.pop("image_url", None)
 
 
 # ---------------------------------------------------------------------------
@@ -386,28 +468,22 @@ def is_retryable_api_error(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 class BaseAgent:
-    """Common driver for a model backend.
+    """Common driver for the osworld prompt style.
 
     Subclasses implement `_call_api(messages) -> (text, context_exceeded)`
-    and `_call_summary_api(prompt) -> text`; everything else (message
-    assembly, screenshot pruning on context-exceeded, history summarization)
-    is shared so behavior is identical across backends.
+    and `_call_summary_api(prompt) -> text`. The message assembly, screenshot
+    pruning on context-exceeded and history summarization here are the
+    OSWorld-baseline path only — the cua_gym (official Holo harness) path is
+    implemented directly in HoloAgent.call() and never summarizes.
     """
 
     history_n = 3          # steps that keep their screenshot in conversation turns
-    summary_interval = 10  # compress this many completed steps into a summary block
+    summary_interval = 10  # compress this many completed steps into a summary block (osworld only)
     max_retry = 3          # API call retries
     enable_history_summary = True
     system_prompt = AGENT_SYSTEM_PROMPT
-    prompt_style = "cua_gym"   # "cua_gym" (our tool_call JSON) or "osworld" (raw pyautogui code)
+    prompt_style = "cua_gym"   # "cua_gym" (official Holo harness) or "osworld" (raw pyautogui code)
     action_format = "json"     # "json" -> tool_call dict; "code" -> fenced pyautogui/WAIT/DONE/FAIL
-
-    def _configure_prompt(self, prompt_style: str, needs_json_hint: bool) -> None:
-        """Resolve system_prompt/action_format from prompt_style; call from subclass __init__."""
-        prompt_style = prompt_style or "cua_gym"
-        self.prompt_style = prompt_style
-        self.action_format = "code" if prompt_style == "osworld" else "json"
-        self.system_prompt = resolve_system_prompt(prompt_style, needs_json_hint)
 
     def initial_state(self) -> dict:
         return {

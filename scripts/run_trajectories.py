@@ -37,8 +37,9 @@ Usage:
     # Use local Docker containers
     python scripts/run_trajectories.py --run-dir ... --env-backend docker
 
-    # Action-history summarization (Holo only — Qwen/MiniMax use OSWorld's own
-    # truncation/folding policy, not LLM summarization). ON by default:
+    # Action-history summarization (Holo --system-prompt osworld only; the
+    # default cua_gym style follows H Company's official harness, which never
+    # summarizes — Qwen/MiniMax use OSWorld's own truncation/folding policy):
     python scripts/run_trajectories.py --run-dir ... --no-summarize-history
 
     # Holo only: use OSWorld's original screenshot+pyautogui-code baseline
@@ -304,6 +305,23 @@ def _tool_call_to_pyautogui(tool: dict, screen_w: int, screen_h: int) -> list[st
     return code if code else ["WAIT"]
 
 
+def _png_dimensions(png_bytes: bytes) -> tuple[int, int] | None:
+    """Read (width, height) from a PNG's IHDR chunk, or None if not a PNG.
+
+    The official docs require scaling [0, 1000] coordinates against the same
+    image bytes the model saw ("any resize, crop, or DPI mismatch will
+    misclick"), so we measure the screenshot itself rather than trusting the
+    env-reported screen size.
+    """
+    if not png_bytes or len(png_bytes) < 24 or png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    width = int.from_bytes(png_bytes[16:20], "big")
+    height = int.from_bytes(png_bytes[20:24], "big")
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
 def _dismiss_libreoffice_format_dialog(env) -> None:
     """Press Enter to dismiss the LibreOffice 'Keep Current Format?' dialog.
 
@@ -345,29 +363,32 @@ def _action_is_ctrl_s(tool: dict) -> bool:
     return "ctrl" in keys and "s" in keys
 
 
-def execute_action(env: Env, action_text: str, screen_w: int = 1920, screen_h: int = 1080) -> bool:
+def execute_action(env: Env, action_text: str, screen_w: int = 1920, screen_h: int = 1080) -> tuple[bool, str]:
     """Parse Holo JSON output and execute on the VM via pyautogui.
 
-    Returns True if the agent signalled task completion (DONE/FAIL).
+    Returns (done, result): done is True if the agent signalled task
+    completion (DONE/FAIL); result is the execution output (stdout/stderr of
+    the pyautogui script, usually empty), fed back to the agent as the
+    official <tool_output> message.
     """
     try:
         step = json.loads(action_text or "{}")
     except json.JSONDecodeError:
-        return False
+        return False, ""
 
     if not isinstance(step, dict):
         # The model occasionally emits a top-level JSON array/scalar instead
         # of an object — still valid JSON, so it doesn't hit JSONDecodeError
         # above, but has no "tool_call" key to read. Treat as a no-op.
-        return False
+        return False, ""
 
     tool = step.get("tool_call") or {}
     code_lines = _tool_call_to_pyautogui(tool, screen_w, screen_h)
 
     if not code_lines or code_lines == ["WAIT"]:
-        return False
+        return False, ""
     if code_lines[0] in ("DONE", "FAIL"):
-        return True
+        return True, ""
 
     script = (
         "import pyautogui, pyperclip, time\n"
@@ -375,14 +396,21 @@ def execute_action(env: Env, action_text: str, screen_w: int = 1920, screen_h: i
         "pyautogui.PAUSE = 0.1\n"
         + "\n".join(code_lines)
     )
-    env.run_python(script)
+    res = env.run_python(script)
 
     # After Ctrl+S, dismiss any "Keep Current Format?" dialog so LibreOffice
     # saves in the original Microsoft format (.xlsx/.pptx/.docx).
     if _action_is_ctrl_s(tool):
         _dismiss_libreoffice_format_dialog(env)
 
-    return False
+    result = ""
+    if isinstance(res, dict):
+        output = (res.get("output") or "").strip()
+        error = (res.get("error") or "").strip()
+        result = output
+        if error:
+            result = f"{output}\n[error] {error}".strip()
+    return False, result
 
 
 _CTRL_KEY_RE = re.compile(r"""['"]ctrl['"]""", re.IGNORECASE)
@@ -744,12 +772,19 @@ def run_one_task(
 
             if osworld_replica:
                 done = execute_pyautogui_code_list(env, pyautogui_code)
+            elif agent.action_format == "code":
+                done = execute_action_code(env, action_text)
             else:
-                done = (
-                    execute_action_code(env, action_text)
-                    if agent.action_format == "code"
-                    else execute_action(env, action_text, screen_w, screen_h)
-                )
+                # Scale [0, 1000] coordinates against the actual screenshot
+                # dimensions (official requirement), not the env-reported
+                # screen size, in case the two ever differ.
+                dims = _png_dimensions(screenshot_bytes)
+                img_w, img_h = dims if dims else (screen_w, screen_h)
+                done, tool_result = execute_action(env, action_text, img_w, img_h)
+                if not done and hasattr(agent, "add_tool_output"):
+                    # Official loop layout: assistant -> <tool_output> -> next
+                    # <observation>.
+                    agent.add_tool_output(agent_state, tool_result)
             if done:
                 break
 
@@ -988,10 +1023,12 @@ def main():
         "--no-summarize-history",
         dest="summarize_history",
         action="store_false",
-        help="Holo only. Disable compressing old steps into a text summary block once "
-             "SUMMARY_INTERVAL steps accumulate (default: on). MiniMax M3 and Qwen are "
+        help="Holo with --system-prompt osworld only. Disable compressing old steps into "
+             "a text summary block once SUMMARY_INTERVAL steps accumulate (default: on). "
+             "The default cua_gym style follows H Company's official harness (no "
+             "summarization ever — this flag is ignored). MiniMax M3 and Qwen are "
              "OSWorld-replica agents with their own truncation/folding policy (see "
-             "minimax_model.py / qwen_model.py) — this flag has no effect on them.",
+             "minimax_model.py / qwen_model.py) — no effect on them either.",
     )
     parser.set_defaults(summarize_history=True)
     parser.add_argument(
