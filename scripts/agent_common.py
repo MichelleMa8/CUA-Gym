@@ -46,6 +46,71 @@ AGENT_SYSTEM_PROMPT = (
     "fail because the grader expects the original file format."
 )
 
+# ---------------------------------------------------------------------------
+# OSWorld-parity system prompt (prompt_style == "osworld")
+# ---------------------------------------------------------------------------
+# Verbatim OSWorld SYS_PROMPT_IN_SCREENSHOT_OUT_CODE (mm_agents/prompts.py in
+# https://github.com/xlang-ai/OSWorld) — the prompt OSWorld's baseline uses for
+# the screenshot-observation / pyautogui-action-space setting. The model
+# returns raw pyautogui code in a fenced code block (or the bare commands
+# WAIT / DONE / FAIL) instead of our structured tool_call JSON — see
+# parse_pyautogui_response() below for how that's parsed back out.
+#
+# Two differences from the OSWorld original:
+#   - Dropped "My computer's password is '{CLIENT_PASSWORD}' ...": none of our
+#     sandbox backends (e2b, Aliyun, Docker) document a fixed sudo password for
+#     their desktop user — e2b's docs (https://e2b.dev/docs/template/user-and-workdir)
+#     name the default user `user` but say nothing about sudo credentials — and
+#     a made-up password in the prompt would just be a lie the model could act on.
+#   - Appended our two dataset-specific reminders (save-before-done, LibreOffice
+#     "Keep Current Format!"), the same two paragraphs tacked onto
+#     AGENT_SYSTEM_PROMPT above, since CUA-Gym's reward scripts read files off
+#     disk in their original Microsoft Office format.
+OSWORLD_SYSTEM_PROMPT = (
+    "You are an agent which follow my instruction and perform desktop computer "
+    "tasks as instructed. You have good knowledge of computer and good internet "
+    "connection and assume your code will run on a computer for controlling the "
+    "mouse and keyboard. For each step, you will get an observation of an image, "
+    "which is the screenshot of the computer screen and you will predict the "
+    "action of the computer based on the image.\n\n"
+    "You are required to use `pyautogui` to perform the action grounded to the "
+    "observation, but DONOT use the `pyautogui.locateCenterOnScreen` function to "
+    "locate the element you want to operate with since we have no image of the "
+    "element you want to operate with. DONOT USE `pyautogui.screenshot()` to "
+    "make screenshot. Return one line or multiple lines of python code to "
+    "perform the action each time, be time efficient. When predicting multiple "
+    "lines of code, make some small sleep like `time.sleep(0.5);` interval so "
+    "that the machine could take; Each time you need to predict a complete "
+    "code, no variables or function can be shared from history You need to to "
+    "specify the coordinates of by yourself based on your observation of "
+    "current observation, but you should be careful to ensure that the "
+    "coordinates are correct. You ONLY need to return the code inside a code "
+    "block, like this:\n"
+    "```python\n"
+    "# your code here\n"
+    "```\n"
+    "Specially, it is also allowed to return the following special code:\n"
+    "When you think you have to wait for some time, return ```WAIT```;\n"
+    "When you think the task can not be done, return ```FAIL```, don't easily "
+    "say ```FAIL```, try your best to do the task;\n"
+    "When you think the task is done, return ```DONE```.\n\n"
+    "First give the current screenshot and previous things we did a short "
+    "reflection, then RETURN ME THE CODE OR SPECIAL CODE I ASKED FOR. NEVER "
+    "EVER RETURN ME ANYTHING ELSE.\n\n"
+    "IMPORTANT: Before returning ```DONE```, make sure all file changes are "
+    "saved to disk (e.g. File → Export As / Ctrl+Shift+E in GIMP, Ctrl+S in "
+    "most apps). Unsaved changes will not be evaluated.\n\n"
+    "IMPORTANT — LibreOffice file format: When working with LibreOffice Calc, "
+    "Impress, or Writer, always save files in their ORIGINAL Microsoft Office "
+    "format (.xlsx, .pptx, .docx). Use Ctrl+S to save. If a dialog appears "
+    "with the title 'Keep Current Format?' or asking whether to keep the "
+    "Microsoft format, ALWAYS click the 'Keep Current Format!' button (do NOT "
+    "choose 'Use ODF Format!'). Saving in ODF format will cause evaluation to "
+    "fail because the grader expects the original file format."
+)
+
+PROMPT_STYLES = ("cua_gym", "osworld")
+
 STEP_SCHEMA = {
     "type": "object",
     "properties": {
@@ -81,6 +146,61 @@ STEP_SCHEMA = {
 }
 
 DONE_TOOL_NAMES = {"answer", "done", "finish", "complete", "terminate", "success", "fail", "failure"}
+
+JSON_SCHEMA_HINT = (
+    "\n\nYou MUST respond with a single JSON object matching this schema, and "
+    "nothing else (no prose, no markdown code fences):\n" + json.dumps(STEP_SCHEMA)
+)
+
+
+def resolve_system_prompt(prompt_style: str, needs_json_hint: bool) -> str:
+    """Resolve the system prompt for a prompt_style ("cua_gym" or "osworld").
+
+    needs_json_hint: append JSON_SCHEMA_HINT for cua_gym backends that lack
+    guided decoding (Minimax, Qwen) and so must ask for JSON in the prompt
+    itself. Ignored for "osworld", whose whole point is free-text/code output.
+    """
+    if prompt_style not in PROMPT_STYLES:
+        raise ValueError(f"Unknown prompt_style: {prompt_style!r} (expected one of {PROMPT_STYLES})")
+    if prompt_style == "osworld":
+        return OSWORLD_SYSTEM_PROMPT
+    return AGENT_SYSTEM_PROMPT + JSON_SCHEMA_HINT if needs_json_hint else AGENT_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# OSWorld-style code-action parsing (prompt_style == "osworld")
+# ---------------------------------------------------------------------------
+
+_CODE_BLOCK_RE = re.compile(r"```(?:\w+\s+)?(.*?)```", re.DOTALL)
+_TERMINAL_COMMANDS = {"WAIT", "DONE", "FAIL"}
+
+
+def parse_pyautogui_response(text: str) -> list[str]:
+    """Extract pyautogui code / terminal commands from an OSWorld-style raw response.
+
+    Mirrors OSWorld's mm_agents.agent.parse_code_from_string(): pulls fenced code
+    blocks out of the model's free-text response. A block that is exactly WAIT/
+    DONE/FAIL is a terminal command; a block whose last line is one of those
+    commands is split into (code, command). Returns a list mixing python source
+    strings and the literal strings "WAIT"/"DONE"/"FAIL", in emission order.
+    """
+    codes: list[str] = []
+    for raw in _CODE_BLOCK_RE.findall(text or ""):
+        block = raw.strip()
+        if not block:
+            continue
+        if block in _TERMINAL_COMMANDS:
+            codes.append(block)
+            continue
+        lines = block.split("\n")
+        if lines[-1].strip() in _TERMINAL_COMMANDS:
+            body = "\n".join(lines[:-1]).strip()
+            if body:
+                codes.append(body)
+            codes.append(lines[-1].strip())
+        else:
+            codes.append(block)
+    return codes
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +244,14 @@ def describe_tool_fallback(tool: dict) -> str:
     return f"Performed action '{name}'."
 
 
+def _truncate_raw_response(raw: str, limit: int = 150) -> str:
+    """Collapse a raw (possibly osworld-style, non-JSON) model response to one line."""
+    text = " ".join((raw or "").split())
+    if not text:
+        return "(no data)"
+    return (text[:limit] + "…") if len(text) > limit else text
+
+
 def make_summary_block_rules(start: int, end: int, responses: list) -> str:
     lines = [f"Steps {start + 1}–{end}:"]
     for i in range(start, end):
@@ -131,7 +259,10 @@ def make_summary_block_rules(start: int, end: int, responses: list) -> str:
             step = json.loads(responses[i] or "{}")
             desc = describe_tool_fallback(step.get("tool_call") or {})
         except Exception:
-            desc = "(action performed)"
+            # Not JSON — e.g. prompt_style=="osworld", where the raw response is
+            # a free-text reflection + fenced pyautogui code. Fall back to a
+            # truncated copy of the raw text rather than a placeholder.
+            desc = _truncate_raw_response(responses[i])
         lines.append(f"  Step {i + 1}: {desc}")
     return "\n".join(lines)
 
@@ -149,7 +280,7 @@ def build_summary_prompt(start: int, end: int, responses: list) -> str:
                 f"  Action taken: {tool_call}"
             )
         except Exception:
-            step_lines.append(f"Step {i + 1}: (no data)")
+            step_lines.append(f"Step {i + 1}:\n  Raw response: {_truncate_raw_response(responses[i])}")
 
     return (
         "You are summarizing a GUI agent's action history.\n"
@@ -178,9 +309,9 @@ def parse_summary_response(raw: str, start: int, end: int, responses: list) -> s
         else:
             try:
                 tool = json.loads(responses[i] or "{}").get("tool_call") or {}
+                desc = describe_tool_fallback(tool)
             except Exception:
-                tool = {}
-            desc = describe_tool_fallback(tool)
+                desc = _truncate_raw_response(responses[i])
         lines.append(f"  Step {step_num}: {desc}")
     return "\n".join(lines)
 
@@ -268,6 +399,15 @@ class BaseAgent:
     max_retry = 3          # API call retries
     enable_history_summary = True
     system_prompt = AGENT_SYSTEM_PROMPT
+    prompt_style = "cua_gym"   # "cua_gym" (our tool_call JSON) or "osworld" (raw pyautogui code)
+    action_format = "json"     # "json" -> tool_call dict; "code" -> fenced pyautogui/WAIT/DONE/FAIL
+
+    def _configure_prompt(self, prompt_style: str, needs_json_hint: bool) -> None:
+        """Resolve system_prompt/action_format from prompt_style; call from subclass __init__."""
+        prompt_style = prompt_style or "cua_gym"
+        self.prompt_style = prompt_style
+        self.action_format = "code" if prompt_style == "osworld" else "json"
+        self.system_prompt = resolve_system_prompt(prompt_style, needs_json_hint)
 
     def initial_state(self) -> dict:
         return {

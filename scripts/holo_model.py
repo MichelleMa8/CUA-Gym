@@ -16,8 +16,7 @@ import re
 import time
 
 import requests
-
-from agent_common import BaseAgent, STEP_SCHEMA, is_context_exceeded, is_retryable_api_error
+from agent_common import STEP_SCHEMA, BaseAgent, is_context_exceeded, is_retryable_api_error
 
 HOLO_BASE_URL = os.getenv("HOLO_BASE_URL", "http://localhost:8000/v1")
 HOLO_MODEL = os.getenv("HOLO_MODEL", "holo-3.1")
@@ -30,27 +29,32 @@ class HoloAgent(BaseAgent):
     enable_history_summary = True
 
     def __init__(self, base_url: str = None, model: str = None, api_key: str = None,
-                 enable_history_summary: bool = None):
+                 enable_history_summary: bool = None, prompt_style: str = "cua_gym"):
         self.base_url = base_url or HOLO_BASE_URL
         self.model = model or HOLO_MODEL
         self.api_key = api_key or os.getenv("HOLO_API_KEY", "token")
         if enable_history_summary is not None:
             self.enable_history_summary = enable_history_summary
+        # Holo enforces the JSON schema via vLLM guided decoding (structured_outputs
+        # below), not a prompt hint, so needs_json_hint=False even in "cua_gym" mode.
+        self._configure_prompt(prompt_style, needs_json_hint=False)
 
     def _call_api(self, messages: list) -> tuple:
         for attempt in range(self.max_retry):
             try:
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "max_tokens": 4096,
+                    "temperature": 0.8,
+                    "chat_template_kwargs": {"enable_thinking": True},
+                }
+                if self.action_format == "json":
+                    payload["structured_outputs"] = {"json": STEP_SCHEMA}
                 resp = requests.post(
                     f"{self.base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "max_tokens": 4096,
-                        "temperature": 0.8,
-                        "structured_outputs": {"json": STEP_SCHEMA},
-                        "chat_template_kwargs": {"enable_thinking": True},
-                    },
+                    json=payload,
                     timeout=120,
                 )
                 if not resp.ok:

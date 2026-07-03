@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
 """
 Collect trajectories on CUA-Gym task bundles using a pluggable model backend
-(Holo-3.1-35B-A3B by default, or MiniMax M3).
+(Holo-3.1-35B-A3B by default, or MiniMax M3, or Qwen3.7-plus).
+
+MiniMax M3 and Qwen run through faithful ports of OSWorld's own agent
+implementations (see scripts/minimax_model.py and scripts/qwen_model.py —
+ported from /lcars/home/q/qianranm/research/GUI/OSWorld/mm_agents/{m3,qwen}):
+system prompt, screenshot handling, coordinate normalization, history
+truncation/folding and response parsing are all identical to how OSWorld
+itself drives these two models. There is no "our own" JSON tool_call mode
+for these two providers — Holo is the only backend still using CUA-Gym's own
+action-space convention (agent_common.py's AGENT_SYSTEM_PROMPT), optionally
+switchable to OSWorld's classic free-pyautogui-code baseline prompt via
+--system-prompt osworld.
 
 Usage:
     # Run tasks selected by select_tasks.py (defaults to Holo-3.1)
@@ -11,11 +22,11 @@ Usage:
     python scripts/run_trajectories.py --run-dir ... --model-url http://nlpgpu06:8000
     HOLO_BASE_URL=http://nlpgpu06:8000/v1 python scripts/run_trajectories.py --run-dir ...
 
-    # Use MiniMax M3 instead of Holo
+    # Use MiniMax M3 instead of Holo (OSWorld-replica agent — see minimax_model.py)
     python scripts/run_trajectories.py --run-dir ... --model-provider minimax_m3
     MINIMAX_API_KEY=... python scripts/run_trajectories.py --run-dir ... --model-provider minimax_m3
 
-    # Use Qwen3.7-plus (via Aliyun DashScope) instead of Holo
+    # Use Qwen3.7-plus via Aliyun DashScope instead of Holo (OSWorld-replica agent — see qwen_model.py)
     python scripts/run_trajectories.py --run-dir ... --model-provider qwen
     DASHSCOPE_API_KEY=... python scripts/run_trajectories.py --run-dir ... --model-provider qwen
 
@@ -26,9 +37,13 @@ Usage:
     # Use local Docker containers
     python scripts/run_trajectories.py --run-dir ... --env-backend docker
 
-    # Action-history summarization is ON by default (needed for small-context
-    # models like Holo-3.1). Disable it for large-context models like Qwen3.6:
+    # Action-history summarization (Holo only — Qwen/MiniMax use OSWorld's own
+    # truncation/folding policy, not LLM summarization). ON by default:
     python scripts/run_trajectories.py --run-dir ... --no-summarize-history
+
+    # Holo only: use OSWorld's original screenshot+pyautogui-code baseline
+    # prompt instead of our structured JSON tool_call action space.
+    python scripts/run_trajectories.py --run-dir ... --system-prompt osworld
 
     # Override tasks source directory
     python scripts/run_trajectories.py --run-dir ... --tasks-dir /path/to/cua_gym_tasks
@@ -67,10 +82,12 @@ try:
 except ModuleNotFoundError:
     pass
 
-from utils.env import Env
+from agent_common import PROMPT_STYLES, parse_pyautogui_response
 from holo_model import HoloAgent
 from minimax_model import MinimaxAgent
 from qwen_model import QwenAgent
+
+from utils.env import Env
 
 DEFAULT_TASKS_DIR = Path(
     "/lcars/home/q/qianranm/research/GUI/CUA-Gym/data/cua_gym_all/cua_gym_tasks"
@@ -368,6 +385,85 @@ def execute_action(env: Env, action_text: str, screen_w: int = 1920, screen_h: i
     return False
 
 
+_CTRL_KEY_RE = re.compile(r"""['"]ctrl['"]""", re.IGNORECASE)
+_S_KEY_RE = re.compile(r"""['"]s['"]""")
+
+
+def _code_contains_ctrl_s(code: str) -> bool:
+    """Best-effort detection of a Ctrl+S (or Ctrl+Shift+S) save inside raw pyautogui
+    code. Mirrors _action_is_ctrl_s()'s "ctrl and s both present" check for the JSON
+    tool_call path, but looser: different agents emit this differently — Qwen uses
+    pyautogui.hotkey('ctrl', 's'), MiniMax/M3 uses discrete
+    keyDown('ctrl')/keyDown('s')/keyUp(...)/keyUp(...) pairs with no hotkey() call at
+    all — so this just checks both quoted key names appear anywhere in the snippet."""
+    return bool(_CTRL_KEY_RE.search(code) and _S_KEY_RE.search(code))
+
+
+def execute_action_code(env: Env, action_text: str) -> bool:
+    """Execute an OSWorld-style raw pyautogui-code response (prompt_style=='osworld').
+
+    Mirrors execute_action() above but for free-text/code output instead of
+    tool_call JSON: pulls fenced pyautogui code (or WAIT/DONE/FAIL) out of the
+    model's raw response via parse_pyautogui_response() and runs it directly,
+    since it's already real pyautogui source rather than a dict to translate.
+
+    Returns True if the agent signalled task completion (DONE/FAIL).
+    """
+    for code in parse_pyautogui_response(action_text):
+        if code in ("DONE", "FAIL"):
+            return True
+        if code == "WAIT":
+            time.sleep(2)
+            continue
+
+        script = (
+            "import pyautogui, pyperclip, time\n"
+            "pyautogui.FAILSAFE = False\n"
+            "pyautogui.PAUSE = 0.1\n"
+            + code
+        )
+        env.run_python(script)
+
+        if _code_contains_ctrl_s(code):
+            _dismiss_libreoffice_format_dialog(env)
+
+    return False
+
+
+def execute_pyautogui_code_list(env: Env, pyautogui_code: list) -> bool:
+    """Execute the pre-parsed action list returned by MinimaxAgent/QwenAgent.predict()
+    (see scripts/minimax_model.py / scripts/qwen_model.py — faithful ports of
+    OSWorld's mm_agents/m3 and mm_agents/qwen agents). Each item is either real
+    pyautogui source (no translation needed — the agent's own parser already
+    produced it) or one of the special tokens DONE/FAIL/WAIT/CALL_USER that
+    OSWorld's desktop_env.env.step() recognises.
+
+    CALL_USER has no meaning in our unattended pipeline (there's no human to
+    call), so it's treated as a failure signal like FAIL.
+
+    Returns True if the agent signalled task completion (DONE/FAIL/CALL_USER).
+    """
+    for code in pyautogui_code:
+        if code in ("DONE", "FAIL", "CALL_USER"):
+            return True
+        if code == "WAIT":
+            time.sleep(2)
+            continue
+
+        script = (
+            "import pyautogui, pyperclip, time\n"
+            "pyautogui.FAILSAFE = False\n"
+            "pyautogui.PAUSE = 0.1\n"
+            + code
+        )
+        env.run_python(script)
+
+        if _code_contains_ctrl_s(code):
+            _dismiss_libreoffice_format_dialog(env)
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Task setup / scoring
 # ---------------------------------------------------------------------------
@@ -493,7 +589,7 @@ def score_env(env: Env, task_dir: Path) -> float:
 def run_one_task(
     task_dir: Path,
     traj_root: Path,
-    agent,
+    agent_factory,
     max_steps: int = MAX_STEPS,
     force: bool = False,
     env_holder: dict | None = None,
@@ -503,12 +599,22 @@ def run_one_task(
     Returns (reward, skipped). skipped=True means task_summary.json already
     existed and force=False, so the task was not re-run.
 
+    agent_factory: zero-arg callable returning a fresh agent instance for
+    this task. Required because MinimaxAgent/QwenAgent are stateful objects
+    (self.screenshots/self.responses mutated by predict()/reset() — see
+    minimax_model.py/qwen_model.py) — sharing one instance across --parallel
+    task threads causes concurrent reset()/predict() calls to race on that
+    state (observed as spurious "list index out of range" crashes). A fresh
+    instance per task sidesteps that regardless of provider; HoloAgent is
+    cheap enough to construct that there's no reason to special-case it.
+
     env_holder: optional dict the caller can pass in to get a handle on the
     live `env` object as soon as it's created (env_holder["env"] = env) —
     used by main()'s per-task watchdog to kill a stuck task's sandbox from
     outside this function's thread, since a blocked Python thread can't be
     force-stopped any other way.
     """
+    agent = agent_factory()
     task_json = json.loads((task_dir / "task.json").read_text())
     instruction = task_json.get("instruction", task_json.get("task_instruction", ""))
     task_id = task_dir.name
@@ -559,7 +665,15 @@ def run_one_task(
         screen_w = size.get("width", 1920)
         screen_h = size.get("height", 1080)
 
-        agent_state = agent.initial_state()
+        # MinimaxAgent/QwenAgent are OSWorld-replica agents: stateful objects
+        # with their own predict()/reset() lifecycle (see minimax_model.py /
+        # qwen_model.py), unlike HoloAgent's external call(instruction, b64,
+        # state) -> (text, new_state) convention.
+        osworld_replica = isinstance(agent, (MinimaxAgent, QwenAgent))
+        if osworld_replica:
+            agent.reset()
+        else:
+            agent_state = agent.initial_state()
 
         # E2B sandbox keepalive: periodically push the timeout back up to its
         # ceiling (E2BEnv.E2B_TIMEOUT, 3600s on Hobby). This can't prevent a
@@ -603,9 +717,12 @@ def run_one_task(
                 )
 
             (images_dir / f"{step:04d}.png").write_bytes(screenshot_bytes)
-            screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
 
-            action_text, agent_state = agent.call(instruction, screenshot_b64, agent_state)
+            if osworld_replica:
+                action_text, pyautogui_code = agent.predict(instruction, {"screenshot": screenshot_bytes})
+            else:
+                screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
+                action_text, agent_state = agent.call(instruction, screenshot_b64, agent_state)
 
             if action_text:
                 consecutive_empty_actions = 0
@@ -625,7 +742,14 @@ def run_one_task(
             with open(traj_jsonl, "a") as _f:
                 _f.write(json.dumps(step_record, ensure_ascii=False) + "\n")
 
-            done = execute_action(env, action_text, screen_w, screen_h)
+            if osworld_replica:
+                done = execute_pyautogui_code_list(env, pyautogui_code)
+            else:
+                done = (
+                    execute_action_code(env, action_text)
+                    if agent.action_format == "code"
+                    else execute_action(env, action_text, screen_w, screen_h)
+                )
             if done:
                 break
 
@@ -833,6 +957,17 @@ def main():
         help="Run N tasks in parallel using threads (default: 1).",
     )
     parser.add_argument(
+        "--model-max-tokens",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Qwen/MiniMax only. Overrides the per-call max_tokens (OSWorld's own "
+             "defaults: 32768 for Qwen, 8192 for MiniMax M3 — sized for those "
+             "providers' cloud endpoints). Required when max_tokens would exceed "
+             "your server's --max-model-len, e.g. a self-hosted vLLM deployment "
+             "with a 16384 context window needs something like 4096.",
+    )
+    parser.add_argument(
         "--task-timeout",
         type=int,
         default=TASK_TIMEOUT,
@@ -853,11 +988,23 @@ def main():
         "--no-summarize-history",
         dest="summarize_history",
         action="store_false",
-        help="Disable compressing old steps into a text summary block once SUMMARY_INTERVAL "
-             "steps accumulate (default: on). Needed for small-context models like Holo-3.1; "
-             "safe to disable for large-context models (e.g. Qwen3.6) that can hold full history.",
+        help="Holo only. Disable compressing old steps into a text summary block once "
+             "SUMMARY_INTERVAL steps accumulate (default: on). MiniMax M3 and Qwen are "
+             "OSWorld-replica agents with their own truncation/folding policy (see "
+             "minimax_model.py / qwen_model.py) — this flag has no effect on them.",
     )
     parser.set_defaults(summarize_history=True)
+    parser.add_argument(
+        "--system-prompt",
+        choices=list(PROMPT_STYLES),
+        default=os.getenv("SYSTEM_PROMPT_STYLE", "cua_gym"),
+        help="Holo only. Which system prompt / action-output format Holo uses: 'cua_gym' "
+             "(default) is our structured JSON tool_call action space; 'osworld' swaps "
+             "in OSWorld's classic screenshot+pyautogui-code baseline prompt (the model "
+             "returns raw pyautogui code in a fenced block, or WAIT/DONE/FAIL). MiniMax M3 "
+             "and Qwen always run their OSWorld-replica agent (see minimax_model.py / "
+             "qwen_model.py) — this flag has no effect on them. Overrides SYSTEM_PROMPT_STYLE env var.",
+    )
     args = parser.parse_args()
 
     if args.e2b_api_key:
@@ -879,27 +1026,52 @@ def main():
         base = args.model_url.rstrip("/")
         model_url = base if base.endswith("/v1") else f"{base}/v1"
 
-    if args.model_provider == "holo":
-        agent = HoloAgent(
-            base_url=model_url,
-            model=args.model_name,
-            api_key=args.model_api_key,
-            enable_history_summary=args.summarize_history,
-        )
-    elif args.model_provider == "qwen":
-        agent = QwenAgent(
-            base_url=model_url,
-            model=args.model_name,
-            api_key=args.model_api_key,
-            enable_history_summary=args.summarize_history,
-        )
-    else:
-        agent = MinimaxAgent(
-            base_url=model_url,
-            model=args.model_name,
-            api_key=args.model_api_key,
-            enable_history_summary=args.summarize_history,
-        )
+    def make_agent():
+        """Construct a fresh agent instance.
+
+        Called once per task (see run_one_task) rather than shared across
+        --parallel task threads: MinimaxAgent/QwenAgent hold mutable per-task
+        state (self.screenshots/self.responses, mutated by predict()/reset()),
+        so sharing one instance across concurrent threads races on that state.
+        HoloAgent has no such state, but building fresh here too keeps this
+        function simple and provider-agnostic.
+        """
+        if args.model_provider == "holo":
+            return HoloAgent(
+                base_url=model_url,
+                model=args.model_name,
+                api_key=args.model_api_key,
+                enable_history_summary=args.summarize_history,
+                prompt_style=args.system_prompt,
+            )
+        elif args.model_provider == "qwen":
+            # OSWorld-replica agent (scripts/qwen_model.py) — no prompt_style /
+            # enable_history_summary knobs; it always runs OSWorld's own prompt,
+            # image handling, and truncation/folding policy.
+            qwen_kwargs = {}
+            if args.model_max_tokens is not None:
+                qwen_kwargs["max_tokens"] = args.model_max_tokens
+            return QwenAgent(
+                base_url=model_url,
+                model=args.model_name,
+                api_key=args.model_api_key,
+                **qwen_kwargs,
+            )
+        else:
+            # OSWorld-replica agent (scripts/minimax_model.py) — same note as above.
+            minimax_kwargs = {}
+            if args.model_max_tokens is not None:
+                minimax_kwargs["max_tokens"] = args.model_max_tokens
+            return MinimaxAgent(
+                base_url=model_url,
+                model=args.model_name,
+                api_key=args.model_api_key,
+                **minimax_kwargs,
+            )
+
+    # One throwaway instance just to print config info below — never used to
+    # run a task (see make_agent's docstring for why each task gets its own).
+    agent = make_agent()
 
     tasks_dir = Path(args.tasks_dir) if args.tasks_dir else DEFAULT_TASKS_DIR
     if not tasks_dir.exists():
@@ -919,7 +1091,12 @@ def main():
     print(f"Tasks to run: {len(task_ids)}")
     print(f"Parallel   : {parallel}")
     print(f"Task timeout: {task_timeout}s ({task_timeout // 60}min)")
-    print(f"Summarize history: {agent.enable_history_summary}")
+    if hasattr(agent, "enable_history_summary"):
+        print(f"Summarize history: {agent.enable_history_summary}")
+    if hasattr(agent, "prompt_style"):
+        print(f"Prompt style: {agent.prompt_style} (action format: {agent.action_format})")
+    else:
+        print("Prompt style: osworld (native — OSWorld-replica agent, see minimax_model.py/qwen_model.py)")
     print()
 
     total = len(task_ids)
@@ -958,7 +1135,7 @@ def main():
         def _worker(_env_holder=env_holder, _outcome=outcome):
             try:
                 reward, skipped = run_one_task(
-                    task_dir, traj_root, agent, max_steps=max_steps, force=force,
+                    task_dir, traj_root, make_agent, max_steps=max_steps, force=force,
                     env_holder=_env_holder,
                 )
                 _outcome["reward"] = reward
