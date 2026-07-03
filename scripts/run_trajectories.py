@@ -77,6 +77,7 @@ DEFAULT_TASKS_DIR = Path(
 )
 
 MAX_STEPS = 15
+TASK_TIMEOUT = 90 * 60  # 90 minutes — per-task wall-clock watchdog (see run_one() in main())
 
 # ---------------------------------------------------------------------------
 # Active environment registry — used for cleanup on KeyboardInterrupt
@@ -149,6 +150,11 @@ def _tool_call_to_pyautogui(tool: dict, screen_w: int, screen_h: int) -> list[st
     tool_name = (tool.get("tool_name") or "").lower().strip()
 
     def scale(x, y):
+        # The model occasionally emits a coordinate as a list/string instead
+        # of a number (e.g. "x": [100, 200]) — treat that as no coordinate
+        # rather than letting `x / 1000` raise a TypeError and kill the task.
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            return None
         return int(x / 1000 * screen_w), int(y / 1000 * screen_h)
 
     def get_xy():
@@ -237,10 +243,11 @@ def _tool_call_to_pyautogui(tool: dict, screen_w: int, screen_h: int) -> list[st
         ex = tool.get("end_x") or tool.get("endX") or tool.get("target_x")
         ey = tool.get("end_y") or tool.get("endY") or tool.get("target_y")
         if sx is not None and sy is not None and ex is not None and ey is not None:
-            sx, sy = scale(sx, sy)
-            ex, ey = scale(ex, ey)
-            code.append(f"pyautogui.moveTo({sx}, {sy})")
-            code.append(f"pyautogui.dragTo({ex}, {ey}, duration=0.5)")
+            start = scale(sx, sy)
+            end = scale(ex, ey)
+            if start and end:
+                code.append(f"pyautogui.moveTo({start[0]}, {start[1]})")
+                code.append(f"pyautogui.dragTo({end[0]}, {end[1]}, duration=0.5)")
 
     elif tool_name == "mouse_down_desktop":
         xy = get_xy()
@@ -329,6 +336,12 @@ def execute_action(env: Env, action_text: str, screen_w: int = 1920, screen_h: i
     try:
         step = json.loads(action_text or "{}")
     except json.JSONDecodeError:
+        return False
+
+    if not isinstance(step, dict):
+        # The model occasionally emits a top-level JSON array/scalar instead
+        # of an object — still valid JSON, so it doesn't hit JSONDecodeError
+        # above, but has no "tool_call" key to read. Treat as a no-op.
         return False
 
     tool = step.get("tool_call") or {}
@@ -483,11 +496,18 @@ def run_one_task(
     agent,
     max_steps: int = MAX_STEPS,
     force: bool = False,
+    env_holder: dict | None = None,
 ) -> tuple[float, bool]:
     """Run a single task and persist trajectory to disk.
 
     Returns (reward, skipped). skipped=True means task_summary.json already
     existed and force=False, so the task was not re-run.
+
+    env_holder: optional dict the caller can pass in to get a handle on the
+    live `env` object as soon as it's created (env_holder["env"] = env) —
+    used by main()'s per-task watchdog to kill a stuck task's sandbox from
+    outside this function's thread, since a blocked Python thread can't be
+    force-stopped any other way.
     """
     task_json = json.loads((task_dir / "task.json").read_text())
     instruction = task_json.get("instruction", task_json.get("task_instruction", ""))
@@ -521,6 +541,8 @@ def run_one_task(
 
     env = Env.create(task_id=task_id)
     _register_env(env)
+    if env_holder is not None:
+        env_holder["env"] = env
     try:
         env.save_config(env_config_path)
         setup_env(env, task_dir)
@@ -539,10 +561,20 @@ def run_one_task(
 
         agent_state = agent.initial_state()
 
-        # E2B sandbox keepalive: extend timeout every N steps so long tasks
-        # don't expire mid-run.  set_timeout resets the TTL from *now*.
+        # E2B sandbox keepalive: periodically push the timeout back up to its
+        # ceiling (E2BEnv.E2B_TIMEOUT, 3600s on Hobby). This can't prevent a
+        # sandbox from hitting the plan's continuous-runtime cap in the first
+        # place, but E2BEnv now creates sandboxes with on_timeout="pause" +
+        # auto_resume=True, so hitting that cap pauses (state preserved) and
+        # transparently resumes on the next SDK call instead of killing the
+        # sandbox. A resume grants a fresh window at E2B's 300s default, not
+        # our 3600s ceiling, so this loop's job is to keep re-extending that
+        # window on a long task so it pauses/resumes as few times as possible.
         _E2B_KEEPALIVE_INTERVAL = 10
         _e2b_sandbox = getattr(env, "_sandbox", None)
+
+        _MAX_CONSECUTIVE_EMPTY_ACTIONS = 3
+        consecutive_empty_actions = 0
 
         for step in range(max_steps):
             # Renew E2B sandbox lifetime periodically.
@@ -558,14 +590,33 @@ def run_one_task(
                     print(f"  [WARN] E2B timeout renewal failed at step {step}: {_exc}")
 
             screenshot_bytes = env.screenshot()
+            if screenshot_bytes is None:
+                # env.screenshot() already retried internally and logged the
+                # underlying error. The sandbox is effectively gone at this
+                # point — don't send an empty/invalid image_url to the model
+                # API (that just trades a clear error for a confusing 400
+                # from the far end). Fail the task now with a clear reason
+                # so it gets classified correctly and retried on the next run.
+                raise RuntimeError(
+                    f"screenshot capture failed at step {step} (sandbox lost) — "
+                    f"see 'E2B screenshot failed after N attempts' in logs for the underlying error"
+                )
 
-            # Save screenshot immediately — no waiting until the end
-            if screenshot_bytes:
-                (images_dir / f"{step:04d}.png").write_bytes(screenshot_bytes)
-
-            screenshot_b64 = base64.b64encode(screenshot_bytes).decode() if screenshot_bytes else ""
+            (images_dir / f"{step:04d}.png").write_bytes(screenshot_bytes)
+            screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
 
             action_text, agent_state = agent.call(instruction, screenshot_b64, agent_state)
+
+            if action_text:
+                consecutive_empty_actions = 0
+            else:
+                consecutive_empty_actions += 1
+                if consecutive_empty_actions >= _MAX_CONSECUTIVE_EMPTY_ACTIONS:
+                    raise RuntimeError(
+                        f"agent returned {consecutive_empty_actions} consecutive empty actions "
+                        f"at step {step} (likely a persistent model API failure) — aborting task "
+                        f"instead of idling until max_steps"
+                    )
 
             step_record = {"step": step, "action": action_text}
             actions.append(step_record)
@@ -613,8 +664,19 @@ def run_one_task(
 # lowercased exception text.
 _FAILURE_PATTERNS: list[tuple[str, list[str]]] = [
     ("task_dir_not_found", ["task dir not found"]),
-    ("e2b_sandbox_lost", ["sandbox was not found", "sandbox timeout", "screenshot failed after"]),
-    ("malformed_model_response", ["'list' object has no attribute 'get'", "object has no attribute 'get'"]),
+    ("task_timeout", ["wall-clock timeout"]),
+    ("e2b_sandbox_lost", [
+        "sandbox was not found", "sandbox timeout", "screenshot failed after",
+        "screenshot capture failed", "sandbox lost",
+    ]),
+    ("malformed_model_response", [
+        "'list' object has no attribute 'get'", "object has no attribute 'get'",
+        "unsupported operand type(s) for /",
+    ]),
+    ("persistent_api_failure", ["consecutive empty actions"]),
+    ("json_generation_aborted", [
+        "model output became abnormal", "generation was aborted", "please retry the request",
+    ]),
     ("invalid_image_url", ["url does not appear to be valid", "invalidparameter"]),
     ("context_exceeded", ["context length", "maximum context", "input length"]),
     ("api_rate_limited", ["rate limit", "429"]),
@@ -771,6 +833,18 @@ def main():
         help="Run N tasks in parallel using threads (default: 1).",
     )
     parser.add_argument(
+        "--task-timeout",
+        type=int,
+        default=TASK_TIMEOUT,
+        metavar="SECONDS",
+        help=f"Wall-clock watchdog per task (default: {TASK_TIMEOUT}s / {TASK_TIMEOUT // 60}min). "
+             "If a task's whole run_one_task() call (sandbox + agent loop + scoring) hasn't "
+             "returned within this many seconds, the task is marked failed and its sandbox is "
+             "killed to unstick anything blocked on it. Needed because E2B sandboxes now pause "
+             "and auto-resume on their own timeout instead of dying, so a genuinely stuck task "
+             "no longer fails on its own.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Re-run tasks that already have a task_summary.json (overwrites existing results).",
@@ -790,6 +864,7 @@ def main():
         os.environ["E2B_API_KEY"] = args.e2b_api_key
     os.environ["ENV_BACKEND"] = args.env_backend
     max_steps = args.max_steps if args.max_steps is not None else MAX_STEPS
+    task_timeout = args.task_timeout
 
     run_dir = Path(args.run_dir)
     if not run_dir.exists():
@@ -843,6 +918,7 @@ def main():
     print(f"Model name : {agent.model}")
     print(f"Tasks to run: {len(task_ids)}")
     print(f"Parallel   : {parallel}")
+    print(f"Task timeout: {task_timeout}s ({task_timeout // 60}min)")
     print(f"Summarize history: {agent.enable_history_summary}")
     print()
 
@@ -866,20 +942,62 @@ def main():
             return
 
         print(f"  [{idx}/{total}] [RUN]  {task_id}")
-        try:
-            reward, skipped = run_one_task(task_dir, traj_root, agent, max_steps=max_steps, force=force)
-            if skipped:
-                with counter_lock:
-                    counters["skipped"] += 1
-            else:
-                print(f"  [DONE] {task_id}  reward={reward:.4f}")
-                with counter_lock:
-                    counters["done"] += 1
-        except Exception as exc:
+
+        # Run the task in its own (inner) thread and join with a wall-clock
+        # timeout. E2B sandboxes now pause + auto-resume on their own timeout
+        # instead of dying, so a genuinely stuck task (sandbox wedged, or a
+        # hang in our own code) no longer fails on its own — this watchdog is
+        # the replacement backstop. A Python thread can't be force-stopped,
+        # so on timeout we kill the task's sandbox (via env_holder, populated
+        # by run_one_task as soon as it creates the env) to unstick anything
+        # blocked on an E2B call, and abandon the inner thread — it exits on
+        # its own once the blocked call errors out.
+        env_holder: dict = {}
+        outcome: dict = {}
+
+        def _worker(_env_holder=env_holder, _outcome=outcome):
+            try:
+                reward, skipped = run_one_task(
+                    task_dir, traj_root, agent, max_steps=max_steps, force=force,
+                    env_holder=_env_holder,
+                )
+                _outcome["reward"] = reward
+                _outcome["skipped"] = skipped
+            except Exception as exc:
+                _outcome["error"] = exc
+
+        worker_thread = threading.Thread(target=_worker, daemon=True)
+        worker_thread.start()
+        worker_thread.join(timeout=task_timeout)
+
+        if worker_thread.is_alive():
+            print(f"  [TIMEOUT] {task_id}  exceeded {task_timeout}s — killing sandbox and moving on")
+            env = env_holder.get("env")
+            if env is not None and hasattr(env, "kill"):
+                try:
+                    env.kill()
+                except Exception as kill_exc:
+                    print(f"  [WARN] failed to kill stuck sandbox for {task_id}: {kill_exc}")
+            with counter_lock:
+                counters["failed"] += 1
+                failure_reasons[task_id] = (
+                    f"task exceeded {task_timeout}s wall-clock timeout — sandbox killed to unblock"
+                )
+            return
+
+        if "error" in outcome:
+            exc = outcome["error"]
             print(f"  [FAIL] {task_id}  {exc}")
             with counter_lock:
                 counters["failed"] += 1
                 failure_reasons[task_id] = str(exc)
+        elif outcome.get("skipped"):
+            with counter_lock:
+                counters["skipped"] += 1
+        else:
+            print(f"  [DONE] {task_id}  reward={outcome['reward']:.4f}")
+            with counter_lock:
+                counters["done"] += 1
 
     try:
         if parallel == 1:

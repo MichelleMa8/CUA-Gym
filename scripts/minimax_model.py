@@ -26,7 +26,13 @@ import time
 
 import requests
 
-from agent_common import AGENT_SYSTEM_PROMPT, BaseAgent, STEP_SCHEMA, is_context_exceeded
+from agent_common import (
+    AGENT_SYSTEM_PROMPT,
+    BaseAgent,
+    STEP_SCHEMA,
+    is_context_exceeded,
+    is_retryable_api_error,
+)
 
 MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
 MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M3")
@@ -73,6 +79,9 @@ class MinimaxAgent(BaseAgent):
                     err_text = resp.text[:500]
                     if is_context_exceeded(err_text):
                         return "", True
+                    if is_retryable_api_error(err_text) and attempt < self.max_retry - 1:
+                        time.sleep(5)
+                        continue
                     raise RuntimeError(f"{resp.status_code} {resp.reason}: {err_text}")
                 text = resp.json()["choices"][0]["message"]["content"] or ""
                 return text, False

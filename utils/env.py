@@ -502,11 +502,29 @@ class E2BEnv:
     Enable by setting ENV_BACKEND=e2b in the environment.
 
     Template defaults to 'desktop-all-apps'; override with E2B_ENV_TEMPLATE.
-    Timeout defaults to 3600 s; override with E2B_ENV_TIMEOUT.
+    Timeout defaults to 3600 s; override with E2B_ENV_TIMEOUT. 3600s is also
+    the hard ceiling for a Hobby-tier E2B account's *continuous* runtime — a
+    sandbox created with a shorter timeout can still be extended mid-run via
+    set_timeout(), but no single window can exceed the plan's cap.
+
+    Sandboxes are created with on_timeout="pause"/auto_resume=True so that
+    hitting that continuous-runtime cap pauses (preserving disk + memory
+    state) instead of killing the sandbox. The next call the caller makes
+    against the same in-memory sandbox object (e.g. commands.run, files.read)
+    transparently triggers a resume — no explicit reconnect needed. Verified
+    experimentally: after a pause/resume cycle the filesystem, running
+    desktop processes (Xvfb/xfce4), and screenshot capability were all
+    intact, with ~1s of added latency for the resume. Note the resumed
+    window defaults to E2B's base timeout (300s) rather than E2B_TIMEOUT, so
+    run_trajectories.py's periodic set_timeout(E2B_TIMEOUT) keepalive call
+    should keep running for the whole task (not just once at start) — its
+    job post-fix is to push each new post-resume window back up to the
+    3600s ceiling, so a long task pauses/resumes as few times as possible.
     """
 
     E2B_TEMPLATE = os.getenv("E2B_ENV_TEMPLATE", "desktop-all-apps")
     E2B_TIMEOUT = int(os.getenv("E2B_ENV_TIMEOUT", "3600"))
+    E2B_LIFECYCLE = {"on_timeout": "pause", "auto_resume": True}
 
     _SCREENSHOT_ATTEMPTS = 3
     _SCREENSHOT_RETRY_DELAY = 1.0
@@ -553,6 +571,7 @@ class E2BEnv:
         sandbox = Sandbox.create(
             template=cls.E2B_TEMPLATE,
             timeout=cls.E2B_TIMEOUT,
+            lifecycle=cls.E2B_LIFECYCLE,
         )
         sandbox_id = str(getattr(sandbox, "sandbox_id", "unknown") or "unknown")
         logger.info(f"E2B sandbox created: {sandbox_id}")

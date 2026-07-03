@@ -234,6 +234,22 @@ def is_context_exceeded(text: str) -> bool:
     return "context length" in low or "input length" in low or "maximum context" in low
 
 
+def is_retryable_api_error(text: str) -> bool:
+    """Transient server-side generation failures the provider itself says to retry.
+
+    E.g. DashScope aborting mid-generation while enforcing response_format=json_object:
+    "Model output became abnormal ... Please retry the request". Distinct from
+    is_context_exceeded (which needs image-pruning, not a plain retry) and from
+    genuinely fatal 4xx errors (bad request/auth) that a retry can't fix.
+    """
+    low = text.lower()
+    return (
+        "model output became abnormal" in low
+        or "generation was aborted" in low
+        or "please retry the request" in low
+    )
+
+
 # ---------------------------------------------------------------------------
 # Base agent — shared history-summarization + retry loop
 # ---------------------------------------------------------------------------
