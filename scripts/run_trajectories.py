@@ -4,12 +4,15 @@ Collect trajectories on CUA-Gym task bundles using a pluggable model backend
 (Holo-3.1-35B-A3B by default, or MiniMax M3, or Qwen3.7-plus).
 
 MiniMax M3 and Qwen run through faithful ports of OSWorld's own agent
-implementations (see scripts/minimax_model.py and scripts/qwen_model.py —
-ported from /lcars/home/q/qianranm/research/GUI/OSWorld/mm_agents/{m3,qwen}):
-system prompt, screenshot handling, coordinate normalization, history
-truncation/folding and response parsing are all identical to how OSWorld
-itself drives these two models. There is no "our own" JSON tool_call mode
-for these two providers — Holo is the only backend still using CUA-Gym's own
+implementations (see scripts/minimax_model.py, scripts/qwen_model.py and
+scripts/qwen3vl_model.py — ported from /lcars/home/q/qianranm/research/GUI/
+OSWorld/mm_agents/{m3,qwen,qwen3vl_agent.py}): system prompt, screenshot
+handling, coordinate normalization, history truncation/folding and response
+parsing are all identical to how OSWorld itself drives these models. 'qwen'
+is the DashScope qwen3.7-plus agent (XML tool calls); 'qwen3vl' is the agent
+for open-weights Qwen VL checkpoints (JSON tool calls, 4-turn history). There
+is no "our own" JSON tool_call mode
+for these providers — Holo is the only backend still using CUA-Gym's own
 action-space convention (agent_common.py's AGENT_SYSTEM_PROMPT), optionally
 switchable to OSWorld's classic free-pyautogui-code baseline prompt via
 --system-prompt osworld.
@@ -29,6 +32,13 @@ Usage:
     # Use Qwen3.7-plus via Aliyun DashScope instead of Holo (OSWorld-replica agent — see qwen_model.py)
     python scripts/run_trajectories.py --run-dir ... --model-provider qwen
     DASHSCOPE_API_KEY=... python scripts/run_trajectories.py --run-dir ... --model-provider qwen
+
+    # Use an open-weights Qwen VL model (e.g. Qwen/Qwen3.6-35B-A3B on local vLLM)
+    # via OSWorld's official qwen3vl agent (JSON tool calls, 4-turn screenshot
+    # history — see qwen3vl_model.py). Do NOT use --model-provider qwen for open
+    # weights: that agent speaks the qwen3.7-plus-specific XML protocol.
+    python scripts/run_trajectories.py --run-dir ... --model-provider qwen3vl \
+        --model-url http://nlpgpu05:8000 --model-name qwen-3.6
 
     # Use e2b cloud sandboxes instead of Aliyun / Docker
     python scripts/run_trajectories.py --run-dir ... --env-backend e2b
@@ -87,6 +97,7 @@ from agent_common import PROMPT_STYLES, parse_pyautogui_response
 from holo_model import HoloAgent
 from minimax_model import MinimaxAgent
 from qwen_model import QwenAgent
+from qwen3vl_model import Qwen3VLAgent
 
 from utils.env import Env
 
@@ -697,7 +708,7 @@ def run_one_task(
         # with their own predict()/reset() lifecycle (see minimax_model.py /
         # qwen_model.py), unlike HoloAgent's external call(instruction, b64,
         # state) -> (text, new_state) convention.
-        osworld_replica = isinstance(agent, (MinimaxAgent, QwenAgent))
+        osworld_replica = isinstance(agent, (MinimaxAgent, QwenAgent, Qwen3VLAgent))
         if osworld_replica:
             agent.reset()
         else:
@@ -874,6 +885,7 @@ def write_run_summary(
     task_summary.json (i.e. crashed or was never run) by failure category.
     """
     reward_eq_1, reward_eq_0, reward_mid, invalid_reward = [], [], [], []
+    reward_values: list[float] = []
     failure_categories: dict[str, list[dict]] = {}
 
     for task_id in task_ids:
@@ -885,10 +897,13 @@ def write_run_summary(
                 reward = None
             if reward == 1 or reward == 1.0:
                 reward_eq_1.append(task_id)
+                reward_values.append(1.0)
             elif reward == 0 or reward == 0.0:
                 reward_eq_0.append(task_id)
+                reward_values.append(0.0)
             elif isinstance(reward, (int, float)) and 0 < reward < 1:
                 reward_mid.append(task_id)
+                reward_values.append(float(reward))
             else:
                 invalid_reward.append(task_id)
         else:
@@ -905,6 +920,8 @@ def write_run_summary(
         "total_tasks": len(task_ids),
         "succeeded": succeeded,
         "failed": failed,
+        # Mean over tasks with a valid numeric reward (crashed/unscored tasks excluded).
+        "average_reward": round(sum(reward_values) / len(reward_values), 4) if reward_values else None,
         "reward": {
             "eq_1": {"count": len(reward_eq_1), "task_ids": reward_eq_1},
             "eq_0": {"count": len(reward_eq_0), "task_ids": reward_eq_0},
@@ -940,29 +957,32 @@ def main():
     )
     parser.add_argument(
         "--model-provider",
-        choices=["holo", "minimax_m3", "qwen"],
+        choices=["holo", "minimax_m3", "qwen", "qwen3vl"],
         default=os.getenv("MODEL_PROVIDER", "holo"),
         help="Which model backend to drive the agent with: 'holo' (Holo-3.1-35B-A3B, "
-             "default), 'minimax_m3' (MiniMax M3), or 'qwen' (Qwen3.7-plus via Aliyun "
-             "DashScope). Overrides MODEL_PROVIDER env var.",
+             "default), 'minimax_m3' (MiniMax M3), 'qwen' (Qwen3.7-plus via Aliyun "
+             "DashScope — XML tool-call protocol), or 'qwen3vl' (open-weights Qwen VL "
+             "models like Qwen/Qwen3.6-35B-A3B on a local vLLM — OSWorld's official "
+             "qwen3vl agent with JSON tool calls). Overrides MODEL_PROVIDER env var.",
     )
     parser.add_argument(
         "--model-url", default=None, metavar="URL",
         help="Base URL of the model's chat/completions endpoint, e.g. http://nlpgpu06:8000 "
-             "(Holo), https://api.minimaxi.com (MiniMax), or "
+             "(Holo / qwen3vl local vLLM), https://api.minimaxi.com (MiniMax), or "
              "https://dashscope.aliyuncs.com/compatible-mode (Qwen). '/v1' is appended "
              "automatically if absent. Overrides HOLO_BASE_URL / MINIMAX_BASE_URL / "
-             "QWEN_BASE_URL depending on --model-provider.",
+             "QWEN_BASE_URL / QWEN3VL_BASE_URL depending on --model-provider.",
     )
     parser.add_argument(
         "--model-name", default=None, metavar="NAME",
         help="Model name/id to request. Overrides HOLO_MODEL / MINIMAX_MODEL / QWEN_MODEL "
-             "depending on --model-provider.",
+             "/ QWEN3VL_MODEL depending on --model-provider.",
     )
     parser.add_argument(
         "--model-api-key", default=None, metavar="KEY",
         help="Bearer token for the model API. Overrides HOLO_API_KEY / MINIMAX_API_KEY / "
-             "DASHSCOPE_API_KEY depending on --model-provider.",
+             "DASHSCOPE_API_KEY / OPENAI_API_KEY depending on --model-provider "
+             "(qwen3vl on a local vLLM accepts any placeholder).",
     )
     parser.add_argument(
         "--env-backend",
@@ -1094,6 +1114,19 @@ def main():
                 api_key=args.model_api_key,
                 **qwen_kwargs,
             )
+        elif args.model_provider == "qwen3vl":
+            # OSWorld-replica agent for open-weights Qwen VL models
+            # (scripts/qwen3vl_model.py) — JSON tool calls, 4-turn screenshot
+            # history, no folding. Same note as above re: no prompt knobs.
+            qwen3vl_kwargs = {}
+            if args.model_max_tokens is not None:
+                qwen3vl_kwargs["max_tokens"] = args.model_max_tokens
+            return Qwen3VLAgent(
+                base_url=model_url,
+                model=args.model_name,
+                api_key=args.model_api_key,
+                **qwen3vl_kwargs,
+            )
         else:
             # OSWorld-replica agent (scripts/minimax_model.py) — same note as above.
             minimax_kwargs = {}
@@ -1133,7 +1166,7 @@ def main():
     if hasattr(agent, "prompt_style"):
         print(f"Prompt style: {agent.prompt_style} (action format: {agent.action_format})")
     else:
-        print("Prompt style: osworld (native — OSWorld-replica agent, see minimax_model.py/qwen_model.py)")
+        print("Prompt style: osworld (native — OSWorld-replica agent, see minimax_model.py/qwen_model.py/qwen3vl_model.py)")
     print()
 
     total = len(task_ids)
